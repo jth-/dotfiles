@@ -1,0 +1,199 @@
+#!/usr/bin/env zsh
+# proscribe — Damnatio Memoriae
+# Tears down cmux workspace(s) and removes the worktree.
+#
+# Usage: proscribe [ISSUE-ID|branch] [--force] [--delete-branch]
+
+set -euo pipefail
+
+SPQR_LIB="${${0:A}:h}/../lib"
+source "$SPQR_LIB/spqr.sh"
+
+# ── Parse Arguments ───────────────────────────────────────────────
+local target="" force=false delete_branch=false
+
+for arg in "$@"; do
+  case "$arg" in
+    --force)         force=true ;;
+    --delete-branch) delete_branch=true ;;
+    -*)              perfidia "Unknown flag: $arg"; exit 1 ;;
+    *)
+      if [[ -z "$target" ]]; then
+        target="$arg"
+      else
+        perfidia "Unexpected argument: $arg"; exit 1
+      fi
+      ;;
+  esac
+done
+
+spqr_banner "PROSCRIBE — Damnatio Memoriae"
+
+# ── Resolve Target ────────────────────────────────────────────────
+local branch=""
+
+if [[ -n "$target" ]]; then
+  # Could be an issue ID (e.g., ENG-123) or a branch name
+  # Try to resolve via Linear first
+  if [[ "$target" =~ ^[a-zA-Z]+-[0-9]+$ ]]; then
+    local linear_json
+    linear_json="$(spqr_query_linear "${(U)target}" 2>/dev/null)" && {
+      branch="$(python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+issue = data.get('data', {}).get('issue', {})
+print(issue.get('branchName', '') or '')
+" <<< "$linear_json")"
+    }
+    # Fall back to lowercase issue ID
+    if [[ -z "$branch" ]]; then
+      branch="${(L)target}"
+    fi
+  else
+    branch="$target"
+  fi
+elif [[ -n "$CMUX_WORKSPACE_ID" ]]; then
+  # Auto-detect from cmux workspace title
+  local ws_json
+  ws_json="$(cmux --json list-workspaces 2>/dev/null)"
+  if [[ -n "$ws_json" ]]; then
+    branch="$(python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+ws_id = sys.argv[1]
+for ws in data.get('workspaces', []):
+    if ws.get('ref') == ws_id or ws.get('id') == ws_id:
+        title = ws.get('title', '')
+        # Strip SPQR: or CENSOR: prefix
+        for prefix in ('SPQR:', 'CENSOR:'):
+            if title.startswith(prefix):
+                title = title[len(prefix):]
+                break
+        print(title)
+        break
+" "$CMUX_WORKSPACE_ID" <<< "$ws_json")"
+  fi
+else
+  # Auto-detect from current git worktree
+  local git_dir git_common_dir
+  git_dir="$(git rev-parse --git-dir 2>/dev/null)" || true
+  git_common_dir="$(git rev-parse --git-common-dir 2>/dev/null)" || true
+  if [[ -n "$git_dir" && "$git_dir" != "$git_common_dir" ]]; then
+    branch="$(git branch --show-current 2>/dev/null)"
+  fi
+fi
+
+if [[ -z "$branch" ]]; then
+  perfidia "Could not determine target. Usage: proscribe [ISSUE-ID|branch] [--force] [--delete-branch]"
+  exit 1
+fi
+
+edictum "Target: $branch"
+
+# ── Detect repo ──────────────────────────────────────────────────
+local repo
+repo="$(spqr_detect_repo)" || exit 1
+
+# ── Ritus I: Dissolving the Senate ────────────────────────────────
+edictum "Ritus I: Dissolving the Senate"
+
+local our_ws_id="${CMUX_WORKSPACE_ID:-}"
+local closed_count=0
+
+if command -v cmux &>/dev/null; then
+  for prefix in "SPQR:" "CENSOR:"; do
+    local ws_ref
+    ws_ref="$(spqr_find_workspace "${prefix}${branch}")"
+    if [[ -n "$ws_ref" ]]; then
+      # Don't close our own workspace yet if we're inside it
+      if [[ "$ws_ref" == "$our_ws_id" ]]; then
+        nota "Deferring close of current workspace (${prefix}${branch})"
+      else
+        nota "Closing workspace ${prefix}${branch}..."
+        spqr_close_workspace "$ws_ref"
+        ((closed_count++))
+      fi
+    fi
+  done
+
+  if (( closed_count == 0 )); then
+    nota "No SPQR workspaces found for $branch"
+  fi
+fi
+
+# ── Ritus II: Razing the Castra ──────────────────────────────────
+edictum "Ritus II: Razing the Castra"
+
+local worktree_dir="$repo/.worktrees/$branch"
+local review_worktree_dir="$repo/.worktrees/review-$branch"
+
+for wt in "$worktree_dir" "$review_worktree_dir"; do
+  if [[ -d "$wt" ]]; then
+    # If we're inside this worktree, cd out first
+    if [[ "$(pwd)" == "$wt"* ]]; then
+      cd "$repo"
+    fi
+
+    nota "Removing worktree at $wt..."
+    if [[ "$force" == true ]]; then
+      git -C "$repo" worktree remove --force "$wt" 2>/dev/null || {
+        caveat "Force removal failed for $wt — try manually"
+      }
+    else
+      git -C "$repo" worktree remove "$wt" 2>/dev/null || {
+        caveat "Worktree removal failed for $wt (use --force to override)"
+      }
+    fi
+  fi
+done
+
+git -C "$repo" worktree prune 2>/dev/null
+
+# ── Ritus III: Damnatio Memoriae ──────────────────────────────────
+edictum "Ritus III: Damnatio Memoriae"
+
+if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null; then
+  if [[ "$delete_branch" == true ]]; then
+    nota "Deleting branch $branch..."
+    git -C "$repo" branch -D "$branch" 2>/dev/null && {
+      nota "Branch $branch deleted"
+    } || {
+      caveat "Failed to delete branch $branch"
+    }
+  else
+    printf "${SPQR_BRONZE}  Delete local branch '$branch'? [y/N] ${SPQR_RESET}"
+    read -r response
+    if [[ "$response" =~ ^[Yy]$ ]]; then
+      git -C "$repo" branch -D "$branch" 2>/dev/null && {
+        nota "Branch $branch deleted"
+      } || {
+        caveat "Failed to delete branch $branch"
+      }
+    else
+      nota "Branch $branch preserved"
+    fi
+  fi
+else
+  nota "No local branch $branch to clean up"
+fi
+
+# Close our own workspace last if we deferred it
+if [[ -n "$our_ws_id" ]] && command -v cmux &>/dev/null; then
+  local our_ws_title
+  our_ws_title="$(python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+ws_id = sys.argv[1]
+for ws in data.get('workspaces', []):
+    if ws.get('ref') == ws_id or ws.get('id') == ws_id:
+        print(ws.get('title', ''))
+        break
+" "$our_ws_id" <<< "$(cmux --json list-workspaces 2>/dev/null)")" 2>/dev/null
+
+  if [[ "$our_ws_title" == "SPQR:$branch" || "$our_ws_title" == "CENSOR:$branch" ]]; then
+    nota "Closing current workspace..."
+    spqr_close_workspace "$our_ws_id"
+  fi
+fi
+
+triumphus "Damnatio memoriae complete for $branch"

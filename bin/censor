@@ -1,0 +1,259 @@
+#!/usr/bin/env zsh
+# censor — The Review Tribunal
+# Creates a review workspace for a GitHub PR with Claude and a shell pane.
+#
+# Usage: censor <PR-NUMBER> [--depth=N]
+
+set -euo pipefail
+
+SPQR_LIB="${${0:A}:h}/../lib"
+source "$SPQR_LIB/spqr.sh"
+
+# ── Parse Arguments ───────────────────────────────────────────────
+local pr_number="" review_depth=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --depth=*) review_depth="${arg#--depth=}" ;;
+    -*)        perfidia "Unknown flag: $arg"; exit 1 ;;
+    *)
+      if [[ -z "$pr_number" ]]; then
+        pr_number="$arg"
+      else
+        perfidia "Unexpected argument: $arg"; exit 1
+      fi
+      ;;
+  esac
+done
+
+if [[ -z "$pr_number" ]]; then
+  perfidia "Usage: censor <PR-NUMBER> [--depth=N]"
+  exit 1
+fi
+
+if ! command -v gh &>/dev/null; then
+  perfidia "gh (GitHub CLI) is required for censor"
+  exit 1
+fi
+
+if ! command -v cmux &>/dev/null; then
+  perfidia "cmux is required for censor"
+  exit 1
+fi
+
+spqr_banner "CENSOR — The Review Tribunal"
+
+# ── Ritus I: Examining the Petition ──────────────────────────────
+edictum "Ritus I: Examining the Petition"
+nota "Fetching PR #$pr_number..."
+
+local pr_json
+pr_json="$(gh pr view "$pr_number" --json title,body,headRefName,url,baseRefName,additions,deletions,files 2>/dev/null)" || {
+  perfidia "Could not fetch PR #$pr_number — ensure you're in the correct repo"
+  exit 1
+}
+
+local pr_title pr_body pr_branch pr_url pr_base
+pr_title="$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('title',''))" <<< "$pr_json")"
+pr_body="$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('body','') or '')" <<< "$pr_json")"
+pr_branch="$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('headRefName',''))" <<< "$pr_json")"
+pr_url="$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('url',''))" <<< "$pr_json")"
+pr_base="$(python3 -c "import json,sys; print(json.loads(sys.stdin.read()).get('baseRefName',''))" <<< "$pr_json")"
+
+local pr_stats
+pr_stats="$(python3 -c "
+import json, sys
+d = json.loads(sys.stdin.read())
+files = d.get('files', [])
+print(f\"+{d.get('additions',0)} -{d.get('deletions',0)} across {len(files)} files\")
+" <<< "$pr_json")"
+
+triumphus "PR #$pr_number: $pr_title"
+nota "$pr_stats"
+nota "Branch: $pr_branch -> $pr_base"
+
+# ── Ritus II: Resolving Linked Decrees ───────────────────────────
+edictum "Ritus II: Resolving Linked Decrees"
+
+local linear_context=""
+
+# Extract issue IDs from branch name and PR body
+local issue_ids=()
+if [[ "$pr_branch" =~ ([a-zA-Z]+-[0-9]+) ]]; then
+  issue_ids+=("${(U)match[1]}")
+fi
+
+# Also look in PR body for issue references
+local body_issues
+body_issues="$(python3 -c "
+import re, sys
+text = sys.argv[1]
+ids = set(re.findall(r'[A-Za-z]+-\d+', text))
+for i in sorted(ids):
+    print(i.upper())
+" "$pr_body" 2>/dev/null)" || true
+
+for id in ${(f)body_issues}; do
+  if [[ ! " ${issue_ids[*]} " =~ " $id " ]]; then
+    issue_ids+=("$id")
+  fi
+done
+
+if (( ${#issue_ids[@]} > 0 )); then
+  nota "Found linked issues: ${issue_ids[*]}"
+  for id in "${issue_ids[@]}"; do
+    local issue_json
+    issue_json="$(spqr_query_linear "$id" 2>/dev/null)" && {
+      local issue_info
+      issue_info="$(python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+issue = data.get('data', {}).get('issue', {})
+if issue:
+    title = issue.get('title', '')
+    desc = issue.get('description', '') or ''
+    print(f'Issue {sys.argv[1]}: {title}')
+    if desc:
+        print(desc[:300])
+" "$id" <<< "$issue_json")"
+      if [[ -n "$issue_info" ]]; then
+        linear_context+="$issue_info\n\n"
+      fi
+    }
+  done
+else
+  nota "No linked Linear issues found"
+fi
+
+# ── Ritus III: Establishing the Tribunal ──────────────────────────
+edictum "Ritus III: Establishing the Tribunal"
+
+local repo
+repo="$(spqr_detect_repo)" || exit 1
+
+# Fetch the PR branch
+nota "Fetching branch $pr_branch..."
+git -C "$repo" fetch origin "$pr_branch" 2>/dev/null || {
+  caveat "Could not fetch $pr_branch — it may already be local"
+}
+
+# Create review worktree at the PR branch (prefer tracking branch over detached HEAD)
+local worktree_dir="$repo/.worktrees/review-$pr_branch"
+
+if [[ -d "$worktree_dir" ]]; then
+  nota "Review worktree already exists at $worktree_dir"
+  local worktree="$worktree_dir"
+else
+  mkdir -p "$repo/.worktrees"
+  if git -C "$repo" show-ref --verify --quiet "refs/heads/$pr_branch"; then
+    git -C "$repo" worktree add "$worktree_dir" "$pr_branch" 2>/dev/null
+  elif git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/$pr_branch"; then
+    git -C "$repo" worktree add --track -b "$pr_branch" "$worktree_dir" "origin/$pr_branch" 2>/dev/null
+  fi || {
+    # Branch may be checked out in another worktree — fall back to detached
+    caveat "Branch checked out elsewhere — using detached HEAD"
+    git -C "$repo" worktree add --detach "$worktree_dir" "origin/$pr_branch" 2>/dev/null || {
+      git -C "$repo" worktree add --detach "$worktree_dir" "$pr_branch" 2>/dev/null || {
+        perfidia "Could not create review worktree for $pr_branch"
+        exit 1
+      }
+    }
+  }
+  local worktree="$worktree_dir"
+fi
+
+spqr_link_deps "$repo" "$worktree"
+nota "Review worktree: $worktree"
+
+# ── Ritus IV: The Censor Takes the Bench ──────────────────────────
+edictum "Ritus IV: The Censor Takes the Bench"
+
+local ws_title="CENSOR:${pr_branch}"
+
+# Check for existing review workspace
+local existing_ws
+existing_ws="$(spqr_find_workspace "$ws_title")"
+if [[ -n "$existing_ws" ]]; then
+  caveat "Existing review session found"
+  cmux select-workspace --workspace "$existing_ws"
+  triumphus "Resumed review of PR #$pr_number"
+  exit 0
+fi
+
+# Build the review prompt and write to a launcher script
+# (avoids shell interpretation issues when sent via cmux send)
+local review_prompt="You are a senior engineer conducting a code review of PR #$pr_number: $pr_title.
+
+PR URL: $pr_url
+Branch: $pr_branch
+Worktree: $worktree"
+
+if [[ -n "$linear_context" ]]; then
+  review_prompt+="\n\nThe following Linear issue(s) are linked to this PR and provide context for the intended changes:\n$linear_context"
+fi
+
+if [[ -n "$pr_body" ]]; then
+  review_prompt+="\n\nPR Description:\n$pr_body"
+fi
+
+review_prompt+="\n\nBegin by orienting yourself:"
+
+if (( review_depth > 0 )); then
+  review_prompt+="
+  git log -$review_depth --oneline       # last $review_depth commit(s) in this branch
+  git diff HEAD~$review_depth...HEAD     # changeset for the last $review_depth commit(s)"
+else
+  review_prompt+="
+  git log $pr_base...HEAD --oneline     # commits in this branch
+  git diff $pr_base...HEAD              # full changeset"
+fi
+
+review_prompt+="\n
+Focus your review on:
+1. **Interfaces** — API contracts, function signatures, data model changes. Are they clean, consistent, and backward-compatible?
+2. **Bugs** — Logic errors, edge cases, missing null/error handling, race conditions, off-by-one errors.
+3. **Ripple effects** — What does this change affect beyond the obvious? Consider: database migrations, caching behaviour, permissions, background tasks, serialization, and frontend contracts.
+4. **Best practices** — Reference the project style guides and existing patterns. Call out deviations.
+
+Be direct and specific. Note both issues and things done well. Your verdict determines whether this branch will be integrated into the codebase."
+
+# Write the prompt to a file and create a launcher script
+# (cmux send mangles special chars, so we launch claude via --command instead)
+local prompt_file="$worktree/.censor-prompt.txt"
+printf "%b" "$review_prompt" > "$prompt_file"
+
+local launcher="$worktree/.censor-launch.sh"
+cat > "$launcher" <<LAUNCHER
+#!/usr/bin/env zsh
+cd '$worktree'
+exec claude --append-system-prompt "\$(cat '$prompt_file')" "Begin the code review."
+LAUNCHER
+chmod +x "$launcher"
+
+# Create workspace with claude as the initial command (no cmux send needed)
+local ws_output
+ws_output="$(cmux new-workspace --command "$launcher" 2>&1)" || {
+  perfidia "Failed to create cmux workspace"
+  exit 1
+}
+local ws_id="${ws_output#OK }"
+if [[ -z "$ws_id" || "$ws_id" == "$ws_output" ]]; then
+  perfidia "Unexpected cmux output: $ws_output"
+  exit 1
+fi
+cmux rename-workspace --workspace "$ws_id" "$ws_title" >/dev/null 2>&1
+
+# Right surface: shell in the worktree
+local surface_ref
+surface_ref="$(spqr_add_split "$ws_id" right)" || true
+if [[ -n "$surface_ref" ]]; then
+  spqr_send "$ws_id" "$surface_ref" "cd $worktree"
+fi
+
+# Switch to workspace
+cmux select-workspace --workspace "$ws_id"
+
+# Set sidebar status
+cmux set-status censor "Reviewing PR #$pr_number" --icon sparkle --color "#C0392B" --workspace "$ws_id" 2>/dev/null || true
+
+triumphus "The Censor is reviewing PR #$pr_number"

@@ -1,0 +1,159 @@
+#!/usr/bin/env zsh
+# senatus — The Senate Convenes
+# Orchestrates a full cmux workspace: consul in one pane, shell in another.
+#
+# Usage: senatus [ISSUE-ID] [--no-claude]
+
+set -euo pipefail
+
+SPQR_LIB="${${0:A}:h}/../lib"
+source "$SPQR_LIB/spqr.sh"
+
+# ── Parse Arguments ───────────────────────────────────────────────
+local issue_id="" no_claude=false passthrough_args=()
+
+for arg in "$@"; do
+  case "$arg" in
+    --no-claude) no_claude=true; passthrough_args+=("$arg") ;;
+    --no-link-deps) passthrough_args+=("$arg") ;;
+    -*)          perfidia "Unknown flag: $arg"; exit 1 ;;
+    *)
+      if [[ -z "$issue_id" ]]; then
+        issue_id="$arg"
+      else
+        perfidia "Unexpected argument: $arg"; exit 1
+      fi
+      ;;
+  esac
+done
+
+if ! command -v cmux &>/dev/null; then
+  perfidia "cmux is required for senatus. Install it or use consul directly."
+  exit 1
+fi
+
+# ── Ad Hoc Session (no issue ID) ────────────────────────────────
+if [[ -z "$issue_id" ]]; then
+  local branch_name="spqr/$(date +%Y%m%d-%H%M%S)"
+  local ws_title="SPQR:${branch_name}"
+
+  spqr_banner "SENATVS — Ad Hoc Session"
+
+  local repo
+  repo="$(spqr_detect_repo)" || exit 1
+
+  local worktree
+  worktree="$(spqr_create_worktree "$repo" "$branch_name")" || exit 1
+  spqr_link_deps "$repo" "$worktree"
+
+  edictum "Creating workspace..."
+  local ws_id
+  ws_id="$(spqr_create_workspace "$repo" "$ws_title")" || exit 1
+
+  # Main pane: launch Claude in the worktree
+  local claude_cmd="cd $worktree && exec claude"
+  spqr_send "$ws_id" "" "$claude_cmd"
+
+  # Aux pane: shell in the worktree
+  local surface_ref
+  surface_ref="$(spqr_add_split "$ws_id" right)" || true
+  if [[ -n "$surface_ref" ]]; then
+    spqr_send "$ws_id" "$surface_ref" "cd $worktree && exec \$SHELL -l"
+  fi
+
+  cmux select-workspace --workspace "$ws_id"
+  cmux set-status spqr "Ad hoc session" --icon sparkle --color "#FFD700" --workspace "$ws_id" 2>/dev/null || true
+  triumphus "Ad hoc session ready: $branch_name"
+  exit 0
+fi
+
+# ── Issue-based Session ──────────────────────────────────────────
+issue_id="${(U)issue_id}"
+
+spqr_banner "SENATVS — The Senate Convenes"
+
+# ── Query Linear for branch name ─────────────────────────────────
+local branch_name=""
+local linear_json
+linear_json="$(spqr_query_linear "$issue_id" 2>/dev/null)" && {
+  branch_name="$(python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+issue = data.get('data', {}).get('issue', {})
+print(issue.get('branchName', '') or '')
+" <<< "$linear_json")"
+}
+
+if [[ -z "$branch_name" ]]; then
+  branch_name="${(L)issue_id}"
+fi
+
+local ws_title="SPQR:${branch_name}"
+local branch_safe="${branch_name//[^a-zA-Z0-9_-]/_}"
+
+# ── Check for Existing Workspace ─────────────────────────────────
+local existing_ws
+existing_ws="$(spqr_find_workspace "$ws_title")"
+
+if [[ -n "$existing_ws" ]]; then
+  caveat "Existing session found: $ws_title"
+  nota "Switching to existing workspace..."
+  cmux select-workspace --workspace "$existing_ws"
+  triumphus "Resumed session $ws_title"
+  exit 0
+fi
+
+# ── Detect repo ──────────────────────────────────────────────────
+local repo
+repo="$(spqr_detect_repo)" || exit 1
+
+# ── Ritus I: Convening the Senate ─────────────────────────────────
+edictum "Ritus I: Convening the Senate"
+nota "Creating workspace $ws_title..."
+
+local ws_id
+ws_id="$(spqr_create_workspace "$repo" "$ws_title")" || exit 1
+nota "Workspace: $ws_id"
+
+# ── Ritus II: Dispatching the Consul ──────────────────────────────
+edictum "Ritus II: Dispatching the Consul"
+
+# Resolve the real path of consul (it may be a symlink in ~/bin/)
+local consul_path="${${0:A}:h}/consul"
+local consul_cmd="$consul_path $issue_id ${passthrough_args[*]}"
+
+nota "Running: consul $issue_id ${passthrough_args[*]}"
+spqr_send "$ws_id" "" "$consul_cmd"
+
+# ── Ritus III: The Auxiliary Camp ─────────────────────────────────
+edictum "Ritus III: The Auxiliary Camp"
+nota "Creating auxiliary shell pane..."
+
+local surface_ref
+surface_ref="$(spqr_add_split "$ws_id" right)" || {
+  caveat "Could not create split — continuing with single pane"
+}
+
+if [[ -n "$surface_ref" ]]; then
+  local worktree_dir="$repo/.worktrees/$branch_name"
+  # Write a small helper that waits for the plan, then cd's into the worktree
+  local wait_script="$repo/.worktrees/.senatus-wait-${branch_safe}.sh"
+  mkdir -p "$repo/.worktrees"
+  cat > "$wait_script" <<WAITEOF
+#!/usr/bin/env zsh
+echo 'Awaiting Acta Senatus...'
+cmux wait-for ACTA_READY_${branch_safe} --timeout 300 2>/dev/null
+cd "$worktree_dir" 2>/dev/null && echo "Ready in worktree: $branch_name"
+exec \$SHELL -l
+WAITEOF
+  chmod +x "$wait_script"
+  spqr_send "$ws_id" "$surface_ref" "source $wait_script"
+fi
+
+# ── Switch to workspace ──────────────────────────────────────────
+cmux select-workspace --workspace "$ws_id"
+
+# Set sidebar status
+cmux set-status spqr "Senatus in session" --icon sparkle --color "#FFD700" --workspace "$ws_id" 2>/dev/null || true
+
+triumphus "The Senate is convened for $issue_id"
