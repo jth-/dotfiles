@@ -1,0 +1,51 @@
+# S.P.Q.R. Infrastructure — Caddy reverse proxy + Postgres
+# Started automatically by senatus/consul on first use.
+#
+# Usage:
+#   docker compose -f docker-compose.infra.yml up -d
+#   docker compose -f docker-compose.infra.yml down
+
+services:
+  postgres:
+    image: postgres:16-bookworm
+    container_name: spqr-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: spqr
+      POSTGRES_PASSWORD: spqr
+      POSTGRES_DB: spqr
+    ports:
+      - "5432:5432"
+    volumes:
+      - spqr-pgdata:/var/lib/postgresql/data
+    networks:
+      - spqr
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U spqr"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: spqr-caddy
+    restart: unless-stopped
+    ports:
+      - "4000:4000"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy/sites:/etc/caddy/sites:ro
+      - spqr-caddy-data:/data
+      - spqr-caddy-config:/config
+    networks:
+      - spqr
+
+volumes:
+  spqr-pgdata:
+  spqr-caddy-data:
+  spqr-caddy-config:
+
+networks:
+  spqr:
+    name: spqr
+    driver: bridge

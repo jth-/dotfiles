@@ -1,6 +1,7 @@
 #!/usr/bin/env zsh
 # proscribe — Damnatio Memoriae
-# Tears down cmux workspace(s) and removes the worktree.
+# Tears down cmux workspace(s), stops Docker containers, drops databases,
+# removes Caddy site configs, and removes worktrees.
 #
 # Usage: proscribe [ISSUE-ID|branch] [--force] [--delete-branch]
 
@@ -121,8 +122,27 @@ if command -v cmux &>/dev/null; then
   fi
 fi
 
-# ── Ritus II: Razing the Castra ──────────────────────────────────
-edictum "Ritus II: Razing the Castra"
+# ── Ritus II: Dismantling the Castrum (Containers) ───────────────
+edictum "Ritus II: Dismantling the Castrum"
+
+# Stop containers for both the main workspace and review workspace
+for container_branch in "$branch" "review-$branch"; do
+  local container_name
+  container_name="$(spqr_container_name "$container_branch")"
+  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${container_name}$"; then
+    spqr_stop_container "$container_branch"
+  fi
+done
+
+# ── Ritus III: Clearing the Routes (Caddy) ───────────────────────
+edictum "Ritus III: Clearing the Routes"
+
+for site_branch in "$branch" "review-$branch"; do
+  spqr_unregister_site "$site_branch"
+done
+
+# ── Ritus IV: Razing the Castra (Worktrees) ──────────────────────
+edictum "Ritus IV: Razing the Castra"
 
 local worktree_dir="$repo/.worktrees/$branch"
 local review_worktree_dir="$repo/.worktrees/review-$branch"
@@ -149,8 +169,8 @@ done
 
 git -C "$repo" worktree prune 2>/dev/null
 
-# ── Ritus III: Damnatio Memoriae ──────────────────────────────────
-edictum "Ritus III: Damnatio Memoriae"
+# ── Ritus V: Damnatio Memoriae ───────────────────────────────────
+edictum "Ritus V: Damnatio Memoriae"
 
 if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null; then
   if [[ "$delete_branch" == true ]]; then
