@@ -531,12 +531,39 @@ spqr_start_container() {
     -e "PGPASSWORD=spqr"
   )
 
-  # Pass through ANTHROPIC_API_KEY if set
+  # Pass through ANTHROPIC_API_KEY (required for Claude)
   [[ -n "${ANTHROPIC_API_KEY:-}" ]] && env_args+=(-e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
 
-  # Pass through project-specific env vars from .env if it exists in the worktree
-  if [[ -f "$worktree/.env" ]]; then
-    env_args+=(--env-file "$worktree/.env")
+  # ── Env / Secrets Model ──────────────────────────────────────────
+  # .env.spqr  — safe config vars (PORT, NODE_ENV, etc.) passed as env-file
+  # .spqr/secrets — allowlist of host env var names to pass through
+  # .env is NOT passed automatically (may contain production secrets)
+
+  # Safe config vars
+  local repo_root
+  repo_root="$(cd "$worktree" && git rev-parse --show-toplevel 2>/dev/null || echo "$worktree")"
+  for env_file in "$worktree/.env.spqr" "$repo_root/.env.spqr"; do
+    if [[ -f "$env_file" ]]; then
+      env_args+=(--env-file "$env_file")
+      break
+    fi
+  done
+
+  # Allowlisted secrets from host environment
+  local secrets_file=""
+  for sf in "$worktree/.spqr/secrets" "$repo_root/.spqr/secrets"; do
+    [[ -f "$sf" ]] && secrets_file="$sf" && break
+  done
+  if [[ -n "$secrets_file" ]]; then
+    while IFS= read -r var_name || [[ -n "$var_name" ]]; do
+      # Skip comments and blank lines
+      [[ "$var_name" =~ ^[[:space:]]*# ]] && continue
+      [[ -z "${var_name// }" ]] && continue
+      var_name="${var_name// }"
+      if [[ -n "${(P)var_name:-}" ]]; then
+        env_args+=(-e "$var_name=${(P)var_name}")
+      fi
+    done < "$secrets_file"
   fi
 
   docker run -d \

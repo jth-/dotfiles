@@ -24,6 +24,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # ── Claude Code CLI ──────────────────────────────────────────────
 RUN npm install -g @anthropic-ai/claude-code
 
+# ── Python tooling (uv) ─────────────────────────────────────────
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh \
+    && mv /root/.local/bin/uv /usr/local/bin/uv \
+    && mv /root/.local/bin/uvx /usr/local/bin/uvx
+
 # ── Agent User (non-root) ───────────────────────────────────────
 RUN groupadd -g 1000 agent 2>/dev/null || true \
     && useradd -m -u 1000 -g 1000 -s /bin/bash agent 2>/dev/null || true \

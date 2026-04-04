@@ -1,11 +1,43 @@
 #!/usr/bin/env bash
 # S.P.Q.R. Agent Container Entrypoint
-# Bootstraps the workspace database and hands off to CMD.
+# Bootstraps dependencies, database, and hands off to CMD.
 set -euo pipefail
+
+# ── Dependency Installation ──────────────────────────────────────
+if [[ -d /workspace ]]; then
+  cd /workspace
+
+  # Node (prefer npm ci for lockfile-based installs)
+  if [[ -f package-lock.json && ! -d node_modules ]]; then
+    echo "[spqr] Installing Node dependencies (npm ci)..."
+    npm ci --no-audit --no-fund 2>&1 | tail -1 || \
+      echo "[spqr] Warning: npm ci failed"
+  elif [[ -f package.json && ! -d node_modules ]]; then
+    echo "[spqr] Installing Node dependencies (npm install)..."
+    npm install --no-audit --no-fund 2>&1 | tail -1 || \
+      echo "[spqr] Warning: npm install failed"
+  fi
+
+  # Python (uv preferred, pip as fallback)
+  if [[ -f pyproject.toml && -f uv.lock && ! -d .venv ]]; then
+    if command -v uv &>/dev/null; then
+      echo "[spqr] Installing Python dependencies (uv sync)..."
+      uv sync 2>&1 | tail -1 || \
+        echo "[spqr] Warning: uv sync failed"
+    elif command -v pip &>/dev/null; then
+      echo "[spqr] Installing Python dependencies (pip)..."
+      python3 -m venv .venv && .venv/bin/pip install -e . 2>&1 | tail -1 || \
+        echo "[spqr] Warning: pip install failed"
+    fi
+  elif [[ -f requirements.txt && ! -d .venv ]]; then
+    echo "[spqr] Installing Python dependencies (requirements.txt)..."
+    python3 -m venv .venv && .venv/bin/pip install -r requirements.txt 2>&1 | tail -1 || \
+      echo "[spqr] Warning: pip install failed"
+  fi
+fi
 
 # ── Database Bootstrap ───────────────────────────────────────────
 if [[ -n "${DATABASE_URL:-}" && -n "${SPQR_DB_NAME:-}" ]]; then
-  # Parse host/port from the infrastructure Postgres URL
   PG_HOST="${PGHOST:-postgres}"
   PG_PORT="${PGPORT:-5432}"
   PG_USER="${PGUSER:-spqr}"
@@ -28,7 +60,7 @@ if [[ -n "${DATABASE_URL:-}" && -n "${SPQR_DB_NAME:-}" ]]; then
       echo "[spqr] Warning: Could not create database ${SPQR_DB_NAME}"
   fi
 
-  # Run seed script if the project provides one
+  # Run seed/migration scripts if the project provides them
   if [[ -f /workspace/db/seed.sql ]]; then
     psql "$DATABASE_URL" -f /workspace/db/seed.sql 2>/dev/null && \
       echo "[spqr] Ran db/seed.sql" || \
