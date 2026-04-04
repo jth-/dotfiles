@@ -36,6 +36,55 @@ if ! command -v cmux &>/dev/null; then
   exit 1
 fi
 
+# ── Interactive Selection (no arguments) ──────────────────────────
+if [[ -z "$issue_id" && -z "$adhoc_name" ]] && spqr_require_fzf; then
+  spqr_banner "SENATVS — Select a Decree"
+
+  local fzf_input=""
+  local has_linear=false
+
+  if [[ -n "${LINEAR_API_KEY:-}" ]]; then
+    nota "Fetching your assigned issues..."
+    fzf_input="$(spqr_linear_my_issues 2>/dev/null)" && has_linear=true || true
+  fi
+
+  # Prepend the ad-hoc sentinel
+  fzf_input="[AD-HOC]$(printf '\t')━$(printf '\t')Create new ad-hoc workspace
+${fzf_input}"
+
+  local fzf_args=(
+    --header=$'SENATVS \u2014 Select a decree  \u2502  Ctrl-S: search all  \u2502  Ctrl-A: my issues  \u2502  Esc: cancel'
+    --prompt="My Issues \u25b8 "
+    --delimiter=$'\t'
+    --with-nth=1,2,3
+    --no-multi
+    --ansi
+    --preview-window=right:50%:wrap
+    --preview="source $SPQR_LIB/spqr.sh --fn spqr_linear_issue_preview {1}"
+    --bind="ctrl-s:reload(source $SPQR_LIB/spqr.sh --fn spqr_linear_search {q})+change-prompt(Search \u25b8 )"
+    --bind="ctrl-a:reload(source $SPQR_LIB/spqr.sh --fn spqr_linear_my_issues)+change-prompt(My Issues \u25b8 )"
+    ${(z)$(spqr_fzf_theme)}
+  )
+
+  local selection
+  selection="$(printf "%s" "$fzf_input" | fzf "${fzf_args[@]}")" || {
+    nota "Selection cancelled"
+    exit 0
+  }
+
+  local selected_id="${selection%%$'\t'*}"
+
+  if [[ "$selected_id" == "[AD-HOC]" ]]; then
+    printf "${SPQR_GOLD}${SPQR_BOLD}  Name your session: ${SPQR_RESET}"
+    read -r adhoc_name
+    if [[ -z "$adhoc_name" ]]; then
+      nota "No name given — using timestamp"
+    fi
+  else
+    issue_id="$selected_id"
+  fi
+fi
+
 # ── Ad Hoc Session (no issue ID) ────────────────────────────────
 if [[ -z "$issue_id" ]]; then
   local branch_name

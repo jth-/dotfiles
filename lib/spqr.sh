@@ -184,13 +184,29 @@ spqr_link_deps() {
 
 # ── Linear API ────────────────────────────────────────────────────
 
-spqr_query_linear() {
-  local issue_id="$1"
-  if [[ -z "$LINEAR_API_KEY" ]]; then
+spqr_query_linear_graphql() {
+  # Generalized Linear GraphQL caller
+  # Usage: spqr_query_linear_graphql <query> <variables_json>
+  local query="$1" variables="${2:-{\}}"
+  if [[ -z "${LINEAR_API_KEY:-}" ]]; then
     caveat "LINEAR_API_KEY not set — skipping Linear query"
     return 1
   fi
 
+  curl -sS --fail-with-body \
+    -X POST https://api.linear.app/graphql \
+    -H "Content-Type: application/json" \
+    -H "Authorization: $LINEAR_API_KEY" \
+    -d "$(python3 -c "
+import json, sys
+print(json.dumps({'query': sys.argv[1], 'variables': json.loads(sys.argv[2])}))
+" "$query" "$variables")" 2>/dev/null || {
+    return 1
+  }
+}
+
+spqr_query_linear() {
+  local issue_id="$1"
   local query='query($id: String!) {
     issue(id: $id) {
       identifier
@@ -204,18 +220,219 @@ spqr_query_linear() {
       labels { nodes { name } }
     }
   }'
-
-  curl -sS --fail-with-body \
-    -X POST https://api.linear.app/graphql \
-    -H "Content-Type: application/json" \
-    -H "Authorization: $LINEAR_API_KEY" \
-    -d "$(python3 -c "
-import json, sys
-print(json.dumps({'query': sys.argv[1], 'variables': {'id': sys.argv[2]}}))
-" "$query" "$issue_id")" 2>/dev/null || {
+  spqr_query_linear_graphql "$query" "{\"id\": \"$issue_id\"}" || {
     caveat "Linear API query failed for $issue_id"
     return 1
   }
+}
+
+# ── fzf / Interactive Helpers ─────────────────────────────────────
+
+spqr_require_fzf() {
+  if ! command -v fzf &>/dev/null; then
+    caveat "fzf not found — interactive selection unavailable"
+    return 1
+  fi
+}
+
+spqr_fzf_theme() {
+  # Return fzf color arguments matching the Roman palette
+  printf "%s" "--color=fg:#f0f0eb,hl:#ffd700,fg+:#f0f0eb,bg+:#2a2a2a,hl+:#ffd700,info:#55aa55,prompt:#ffd700,pointer:#dc143c,marker:#dc143c,header:#cdaf64,border:#cdaf64 --border=rounded --margin=1,2"
+}
+
+spqr_linear_viewer_id() {
+  # Get the current Linear user's ID (cached for the session)
+  if [[ -n "${SPQR_LINEAR_VIEWER_ID:-}" ]]; then
+    printf "%s" "$SPQR_LINEAR_VIEWER_ID"
+    return
+  fi
+
+  local result
+  result="$(spqr_query_linear_graphql '{ viewer { id } }' '{}')" || return 1
+
+  SPQR_LINEAR_VIEWER_ID="$(python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+print(data.get('data', {}).get('viewer', {}).get('id', ''))
+" <<< "$result")"
+
+  if [[ -z "$SPQR_LINEAR_VIEWER_ID" ]]; then
+    return 1
+  fi
+  typeset -g SPQR_LINEAR_VIEWER_ID
+  printf "%s" "$SPQR_LINEAR_VIEWER_ID"
+}
+
+spqr_linear_my_issues() {
+  # Fetch ~25 open issues assigned to the current user
+  # Output: TSV lines of IDENTIFIER<tab>STATE<tab>TITLE
+  local viewer_id
+  viewer_id="$(spqr_linear_viewer_id)" || return 1
+
+  local query='query($userId: ID!) {
+    issues(
+      filter: {
+        assignee: { id: { eq: $userId } }
+        state: { type: { nin: ["canceled", "completed"] } }
+      }
+      orderBy: updatedAt
+      first: 25
+    ) {
+      nodes {
+        identifier
+        title
+        state { name }
+      }
+    }
+  }'
+
+  local result
+  result="$(spqr_query_linear_graphql "$query" "{\"userId\": \"$viewer_id\"}")" || return 1
+
+  python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+for node in data.get('data', {}).get('issues', {}).get('nodes', []):
+    ident = node.get('identifier', '')
+    title = node.get('title', '')
+    state = node.get('state', {}).get('name', '')
+    print(f'{ident}\t{state}\t{title}')
+" <<< "$result"
+}
+
+spqr_linear_search() {
+  # Full-text search across Linear issues
+  # Usage: spqr_linear_search <query>
+  local search_term="$1"
+  if [[ -z "$search_term" ]]; then
+    spqr_linear_my_issues
+    return
+  fi
+
+  local query='query($q: String!) {
+    searchIssues(query: $q, first: 25) {
+      nodes {
+        identifier
+        title
+        state { name }
+      }
+    }
+  }'
+
+  local result
+  result="$(spqr_query_linear_graphql "$query" "{\"q\": \"$search_term\"}")" || return 1
+
+  python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+for node in data.get('data', {}).get('searchIssues', {}).get('nodes', []):
+    ident = node.get('identifier', '')
+    title = node.get('title', '')
+    state = node.get('state', {}).get('name', '')
+    print(f'{ident}\t{state}\t{title}')
+" <<< "$result"
+}
+
+spqr_linear_issue_preview() {
+  # Format a Linear issue for fzf preview pane
+  # Usage: spqr_linear_issue_preview <IDENTIFIER>
+  local identifier="$1"
+  local result
+  result="$(spqr_query_linear "$identifier" 2>/dev/null)" || {
+    echo "Could not fetch issue $identifier"
+    return
+  }
+
+  python3 -c "
+import json, sys, textwrap
+data = json.loads(sys.stdin.read())
+issue = data.get('data', {}).get('issue', {})
+if not issue:
+    print('Issue not found')
+    sys.exit()
+
+ident = issue.get('identifier', '')
+title = issue.get('title', '')
+state = issue.get('state', {}).get('name', '')
+labels = ', '.join(l['name'] for l in issue.get('labels', {}).get('nodes', []))
+desc = issue.get('description', '') or ''
+branch = issue.get('branchName', '') or ''
+url = issue.get('url', '') or ''
+parent = issue.get('parent')
+project = issue.get('project')
+
+print(f'{ident}: {title}')
+print(f'State: {state}', end='')
+if labels:
+    print(f'    Labels: {labels}', end='')
+print()
+if branch:
+    print(f'Branch: {branch}')
+if url:
+    print(f'URL: {url}')
+if parent:
+    print(f'Parent: {parent.get(\"identifier\", \"\")}: {parent.get(\"title\", \"\")}')
+if project:
+    print(f'Project: {project.get(\"name\", \"\")}')
+print('─' * 50)
+if desc:
+    print(textwrap.fill(desc, width=70))
+else:
+    print('(no description)')
+" <<< "$result"
+}
+
+spqr_list_workspaces() {
+  # List active SPQR workspaces for proscribe interactive mode
+  # Merges cmux workspaces (SPQR:/CENSOR:) with orphan spqr-* containers
+  # Output: TSV lines of BRANCH<tab>TYPE<tab>STATUS
+  local seen=()
+
+  # cmux workspaces
+  if command -v cmux &>/dev/null; then
+    local ws_json
+    ws_json="$(cmux --json list-workspaces 2>/dev/null)" || true
+    if [[ -n "$ws_json" ]]; then
+      local cmux_lines
+      cmux_lines="$(python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+for ws in data.get('workspaces', []):
+    title = ws.get('title', '')
+    for prefix in ('SPQR:', 'CENSOR:'):
+        if title.startswith(prefix):
+            branch = title[len(prefix):]
+            kind = prefix.rstrip(':')
+            print(f'{branch}\t{kind}\tWorkspace active')
+            break
+" <<< "$ws_json" 2>/dev/null)"
+      if [[ -n "$cmux_lines" ]]; then
+        printf "%s\n" "$cmux_lines"
+        while IFS=$'\t' read -r b _rest; do
+          seen+=("$b")
+        done <<< "$cmux_lines"
+      fi
+    fi
+  fi
+
+  # Orphan Docker containers (not in cmux)
+  local containers
+  containers="$(docker ps --filter 'name=spqr-' --format '{{.Names}}\t{{.Status}}' 2>/dev/null)" || true
+  if [[ -n "$containers" ]]; then
+    while IFS=$'\t' read -r cname status; do
+      # Skip infrastructure containers
+      [[ "$cname" == "spqr-postgres" || "$cname" == "spqr-caddy" ]] && continue
+      # Extract branch from container name (strip spqr- prefix)
+      local branch="${cname#spqr-}"
+      # Skip if already seen from cmux
+      local already=false
+      for s in "${seen[@]}"; do
+        [[ "$(spqr_container_name "$s")" == "$cname" ]] && already=true && break
+      done
+      $already && continue
+      printf "%s\tContainer\t%s\n" "$branch" "$status"
+    done <<< "$containers"
+  fi
 }
 
 # ── Docker / Container Helpers ────────────────────────────────────
@@ -417,3 +634,11 @@ spqr_slugify() {
   slug="${slug//--/-}"               # collapse double hyphens
   printf "%s" "$slug"
 }
+
+# ── Direct Invocation Dispatch ────────────────────────────────────
+# Allows fzf --bind reload(...) to call library functions in a subshell.
+# Usage: source spqr.sh --fn <function_name> [args...]
+if [[ "${1:-}" == "--fn" ]]; then
+  shift
+  "$@"
+fi

@@ -84,6 +84,37 @@ else
   fi
 fi
 
+# ── Interactive Selection (no target resolved) ────────────────────
+if [[ -z "$branch" ]] && spqr_require_fzf; then
+  local workspace_list
+  workspace_list="$(spqr_list_workspaces 2>/dev/null)"
+
+  if [[ -z "$workspace_list" ]]; then
+    perfidia "No active SPQR workspaces or containers found"
+    exit 1
+  fi
+
+  local fzf_args=(
+    --header=$'PROSCRIBE \u2014 Select a target for Damnatio Memoriae  \u2502  Esc: cancel'
+    --prompt="Filter \u25b8 "
+    --delimiter=$'\t'
+    --with-nth=1,2,3
+    --no-multi
+    --ansi
+    --preview-window=right:50%:wrap
+    --preview="echo 'Branch: {1}'; echo 'Type: {2}'; echo 'Status: {3}'; echo; cname=spqr-\$(echo {1} | tr -c 'a-zA-Z0-9_-' '-'); docker ps -a --filter name=\$cname --format 'Container: {{.Names}}\nImage: {{.Image}}\nCreated: {{.CreatedAt}}\nStatus: {{.Status}}' 2>/dev/null; echo"
+    ${(z)$(spqr_fzf_theme)}
+  )
+
+  local selection
+  selection="$(printf "%s" "$workspace_list" | fzf "${fzf_args[@]}")" || {
+    nota "Selection cancelled"
+    exit 0
+  }
+
+  branch="${selection%%$'\t'*}"
+fi
+
 if [[ -z "$branch" ]]; then
   perfidia "Could not determine target. Usage: proscribe [ISSUE-ID|branch] [--force] [--delete-branch]"
   exit 1

@@ -30,7 +30,7 @@ if ! docker info &>/dev/null 2>&1; then
 fi
 
 # Optional tools
-for cmd in cmux gh direnv claude; do
+for cmd in cmux gh direnv claude fzf; do
   if command -v "$cmd" &>/dev/null; then
     nota "$cmd ✓"
   else

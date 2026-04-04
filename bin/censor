@@ -27,13 +27,78 @@ for arg in "$@"; do
   esac
 done
 
-if [[ -z "$pr_number" ]]; then
-  perfidia "Usage: censor <PR-NUMBER> [--depth=N]"
+if ! command -v gh &>/dev/null; then
+  perfidia "gh (GitHub CLI) is required for censor"
   exit 1
 fi
 
-if ! command -v gh &>/dev/null; then
-  perfidia "gh (GitHub CLI) is required for censor"
+# ── Interactive Selection (no PR number) ──────────────────────────
+if [[ -z "$pr_number" ]] && spqr_require_fzf; then
+  spqr_banner "CENSOR — Select a Petition"
+
+  nota "Fetching PRs awaiting your review..."
+
+  # Fetch PRs needing review from me
+  local review_prs=""
+  review_prs="$(gh pr list --search "review-requested:@me" --state open --limit 25 \
+    --json number,title,author,additions,deletions,headRefName \
+    --jq '.[] | "#\(.number)\t\(.author.login)\t+\(.additions)/-\(.deletions)\t\(.title)"' 2>/dev/null)" || true
+
+  # Fetch other recent open PRs
+  local other_prs=""
+  other_prs="$(gh pr list --state open --limit 25 \
+    --json number,title,author,additions,deletions,headRefName \
+    --jq '.[] | "#\(.number)\t\(.author.login)\t+\(.additions)/-\(.deletions)\t\(.title)"' 2>/dev/null)" || true
+
+  # Merge: review-requested first, then others (deduplicating)
+  local fzf_input=""
+  if [[ -n "$review_prs" ]]; then
+    fzf_input="$review_prs"
+  fi
+  if [[ -n "$other_prs" ]]; then
+    # Deduplicate by PR number
+    local seen_prs=""
+    [[ -n "$review_prs" ]] && seen_prs="$review_prs"
+    while IFS= read -r line; do
+      local pr_num="${line%%$'\t'*}"
+      if [[ -n "$seen_prs" ]] && printf "%s" "$seen_prs" | grep -q "^${pr_num}$(printf '\t')"; then
+        continue
+      fi
+      [[ -n "$fzf_input" ]] && fzf_input+=$'\n'
+      fzf_input+="$line"
+    done <<< "$other_prs"
+  fi
+
+  if [[ -z "$fzf_input" ]]; then
+    perfidia "No open PRs found"
+    exit 1
+  fi
+
+  local fzf_args=(
+    --header=$'CENSOR \u2014 Select a petition to review  \u2502  Esc: cancel'
+    --prompt="Filter \u25b8 "
+    --delimiter=$'\t'
+    --with-nth=1,2,3,4
+    --no-multi
+    --ansi
+    --preview-window=right:50%:wrap
+    --preview='gh pr view ${1/#\#/} --json title,body,author,additions,deletions,headRefName,baseRefName,files --jq "\"PR \" + (.title) + \"\nAuthor: \" + (.author.login) + \"\nBranch: \" + (.headRefName) + \" -> \" + (.baseRefName) + \"\n+\" + (.additions|tostring) + \" -\" + (.deletions|tostring) + \" across \" + (.files|length|tostring) + \" files\n\" + \"─\"*50 + \"\n\" + (.body // \"(no description)\")"'
+    ${(z)$(spqr_fzf_theme)}
+  )
+
+  local selection
+  selection="$(printf "%s" "$fzf_input" | fzf "${fzf_args[@]}")" || {
+    nota "Selection cancelled"
+    exit 0
+  }
+
+  # Extract PR number (strip the # prefix)
+  pr_number="${selection%%$'\t'*}"
+  pr_number="${pr_number#\#}"
+fi
+
+if [[ -z "$pr_number" ]]; then
+  perfidia "Usage: censor <PR-NUMBER> [--depth=N]"
   exit 1
 fi
 
