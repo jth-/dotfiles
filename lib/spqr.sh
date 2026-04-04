@@ -650,6 +650,8 @@ spqr_db_template() {
   # Usage:
   #   spqr_db_template create <name> <dump_file>   — load a pg_dump into a template
   #   spqr_db_template create <name> --from <dburl> — copy from an existing database
+  #   spqr_db_template use <name>                   — set template for current project
+  #   spqr_db_template unuse                        — unset template for current project
   #   spqr_db_template list                         — list available templates
   #   spqr_db_template drop <name>                  — remove a template
   #
@@ -701,8 +703,18 @@ spqr_db_template() {
       # Mark as template so Postgres disallows connections by default
       $psql_cmd -c "ALTER DATABASE \"$name\" IS_TEMPLATE = true" >/dev/null 2>&1
 
-      nota "To use this template, create .spqr/template in your repo:"
-      nota "  echo '$name' > .spqr/template"
+      # Offer to link to current project
+      local repo
+      repo="$(spqr_detect_repo 2>/dev/null)" || true
+      if [[ -n "$repo" ]]; then
+        printf "${SPQR_BRONZE}  Use template '$name' for $(basename "$repo")? [Y/n] ${SPQR_RESET}"
+        read -r response
+        if [[ ! "$response" =~ ^[Nn]$ ]]; then
+          mkdir -p "$repo/.spqr"
+          printf "%s\n" "$name" > "$repo/.spqr/template"
+          triumphus "Template $name linked to $(basename "$repo")"
+        fi
+      fi
       ;;
 
     list)
@@ -712,6 +724,88 @@ spqr_db_template() {
         --no-align --tuples-only 2>/dev/null | while IFS='|' read -r name size; do
         nota "$name ($size)"
       done
+      ;;
+
+    use)
+      local name="${1:-}"
+      local repo
+      repo="$(spqr_detect_repo 2>/dev/null)" || {
+        perfidia "Not in a git repository — cd into a project first"
+        return 1
+      }
+
+      # If no name given, show available templates in fzf
+      if [[ -z "$name" ]]; then
+        local templates
+        templates="$($pg_exec psql -U spqr -d postgres \
+          -c "SELECT datname || E'\t' || pg_size_pretty(pg_database_size(datname)) FROM pg_database WHERE datistemplate = true AND datname NOT LIKE 'template%'" \
+          --no-align --tuples-only 2>/dev/null)"
+
+        if [[ -z "$templates" ]]; then
+          perfidia "No templates available — create one first with: spqr template create <name>"
+          return 1
+        fi
+
+        if command -v fzf &>/dev/null; then
+          local selection
+          selection="$(printf "%s" "$templates" | fzf \
+            --header="Select a template for $(basename "$repo")" \
+            --prompt="Template \u25b8 " \
+            --delimiter=$'\t' \
+            --with-nth=1,2 \
+            --no-multi \
+            ${(z)$(spqr_fzf_theme)})" || {
+            nota "Selection cancelled"
+            return 0
+          }
+          name="${selection%%$'\t'*}"
+        else
+          edictum "Available templates:"
+          printf "%s\n" "$templates" | while IFS=$'\t' read -r tname tsize; do
+            nota "$tname ($tsize)"
+          done
+          printf "${SPQR_GOLD}${SPQR_BOLD}  Template name: ${SPQR_RESET}"
+          read -r name
+          [[ -z "$name" ]] && return 0
+        fi
+      fi
+
+      mkdir -p "$repo/.spqr"
+      printf "%s\n" "$name" > "$repo/.spqr/template"
+      triumphus "Template $name linked to $(basename "$repo")"
+      nota "New workspaces will clone this template for their database"
+      ;;
+
+    unuse)
+      local repo
+      repo="$(spqr_detect_repo 2>/dev/null)" || {
+        perfidia "Not in a git repository — cd into a project first"
+        return 1
+      }
+      if [[ -f "$repo/.spqr/template" ]]; then
+        local old_name
+        old_name="$(head -1 "$repo/.spqr/template" | tr -d '[:space:]')"
+        rm -f "$repo/.spqr/template"
+        triumphus "Unlinked template $old_name from $(basename "$repo")"
+        nota "New workspaces will use empty databases (+ db/seed.sql if present)"
+      else
+        nota "No template configured for $(basename "$repo")"
+      fi
+      ;;
+
+    status)
+      local repo
+      repo="$(spqr_detect_repo 2>/dev/null)" || {
+        perfidia "Not in a git repository — cd into a project first"
+        return 1
+      }
+      if [[ -f "$repo/.spqr/template" ]]; then
+        local current_name
+        current_name="$(head -1 "$repo/.spqr/template" | tr -d '[:space:]')"
+        edictum "$(basename "$repo") uses template: $current_name"
+      else
+        nota "No template configured for $(basename "$repo")"
+      fi
       ;;
 
     drop)
@@ -724,7 +818,7 @@ spqr_db_template() {
       ;;
 
     *)
-      perfidia "Unknown subcommand: $subcmd (use create, list, or drop)"
+      perfidia "Unknown subcommand: $subcmd (use create, list, use, unuse, status, or drop)"
       return 1
       ;;
   esac

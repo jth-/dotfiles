@@ -46,12 +46,19 @@ case "$subcmd" in
   help|--help|-h)
     spqr_banner "S.P.Q.R. Utilities"
     echo "Usage:"
-    echo "  spqr template create <name> <dump.sql>     Create template from SQL dump"
-    echo "  spqr template create <name> --from <url>   Create template from live database"
-    echo "  spqr template list                         List available templates"
-    echo "  spqr template drop <name>                  Remove a template"
-    echo "  spqr infra up                              Start infrastructure"
-    echo "  spqr infra down                            Stop infrastructure"
+    echo ""
+    echo "  Templates:"
+    echo "    spqr template create <name> <dump.sql>     Create template from SQL dump"
+    echo "    spqr template create <name> --from <url>   Create template from live database"
+    echo "    spqr template use [<name>]                 Set template for current project"
+    echo "    spqr template unuse                        Unset template for current project"
+    echo "    spqr template status                       Show current project's template"
+    echo "    spqr template list                         List available templates"
+    echo "    spqr template drop <name>                  Remove a template"
+    echo ""
+    echo "  Infrastructure:"
+    echo "    spqr infra up                              Start Postgres + Caddy"
+    echo "    spqr infra down                            Stop Postgres + Caddy"
     ;;
 
   *)
