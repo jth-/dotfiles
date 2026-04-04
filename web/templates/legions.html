@@ -1,0 +1,35 @@
+{% extends "base.html" %}
+{% set active = "legions" %}
+{% block title %}Legions{% endblock %}
+
+{% block content %}
+<div class="section-header">
+  <span class="section-numeral">I</span>
+  <h1 class="section-title">Legions</h1>
+  <span id="legion-count" style="font-family:var(--font-mono);font-size:12px;color:var(--slate-light);margin-left:4px"></span>
+  <div style="margin-left:auto;display:flex;gap:10px">
+    <a href="/senatus" class="btn btn-senatus btn-sm">+ New Session</a>
+    <a href="/censor"  class="btn btn-censor  btn-sm">Review PR</a>
+  </div>
+</div>
+
+<p class="section-desc">Active agent workspaces. Refreshes every 10 seconds.</p>
+
+<div class="card-grid" id="workspaces-grid">
+  <div class="empty-state" style="grid-column:1/-1">
+    <div class="empty-icon">⏳</div>
+    <div class="empty-title">Consulting the augurs…</div>
+  </div>
+</div>
+
+<!-- Proscribe output terminal (hidden until used) -->
+<div class="terminal hidden" id="proscribe-terminal" style="margin-top:28px">
+  <div class="terminal-bar">
+    <div class="terminal-dot r"></div>
+    <div class="terminal-dot y"></div>
+    <div class="terminal-dot g"></div>
+    <span class="terminal-title">proscribe — Damnatio Memoriae</span>
+  </div>
+  <div class="terminal-body"></div>
+</div>
+{% endblock %}

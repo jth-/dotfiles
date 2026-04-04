@@ -1,0 +1,109 @@
+{% extends "base.html" %}
+{% set active = "senatus" %}
+{% block title %}Senatus{% endblock %}
+
+{% block content %}
+<div class="section-header">
+  <span class="section-numeral">II</span>
+  <h1 class="section-title">Senatus</h1>
+</div>
+
+<p class="section-desc">Convene a new agent session. The workspace will be created and Claude will launch inside it — switch to your terminal to interact.</p>
+
+{% if not has_linear %}
+<div class="alert alert-omen" style="margin-bottom:24px">
+  <span class="alert-icon">⚠</span>
+  <div>
+    <div class="alert-title" style="color:var(--gold-muted)">Omen — LINEAR_API_KEY not set</div>
+    <div class="alert-text">Linear issue search is unavailable. Use ad-hoc sessions, or set LINEAR_API_KEY in your environment before starting the server.</div>
+  </div>
+</div>
+{% endif %}
+
+<div class="tabs-container">
+  <div class="tabs">
+    <button class="tab active" data-panel="panel-linear">Linear Issue</button>
+    <button class="tab"        data-panel="panel-adhoc">Ad-hoc Session</button>
+  </div>
+
+  <form id="senatus-form">
+
+    <!-- ── Linear Issue Panel ── -->
+    <div class="tab-panel active" id="panel-linear">
+      {% if has_linear %}
+      <div class="form-group">
+        <label class="form-label">Search Issues</label>
+        <input id="issue-search" type="text" class="form-input"
+               placeholder="Search by title or identifier…" autocomplete="off">
+        <div id="issue-results" class="issue-results" style="display:none"></div>
+      </div>
+
+      <div id="selected-display-wrap" class="alert alert-triumph hidden" style="margin-bottom:0">
+        <span class="alert-icon">✓</span>
+        <div>
+          <div class="alert-title" style="color:var(--laurel)">Issue selected</div>
+          <div class="alert-text">
+            <span class="mono" id="selected-display" style="font-family:var(--font-mono);color:var(--crimson)"></span>
+          </div>
+        </div>
+      </div>
+
+      <input type="hidden" id="selected-issue-id">
+
+      {% else %}
+      <div style="padding:20px;color:var(--slate-light);font-style:italic;font-size:15px">
+        Linear integration not configured. Use the ad-hoc tab.
+      </div>
+      {% endif %}
+    </div>
+
+    <!-- ── Ad-hoc Panel ── -->
+    <div class="tab-panel" id="panel-adhoc">
+      <div class="form-group">
+        <label class="form-label" for="adhoc-name">Session Name</label>
+        <input id="adhoc-name" type="text" class="form-input"
+               placeholder="e.g. refactor-auth-flow">
+        <div class="form-hint">Will be slugified into a branch name</div>
+      </div>
+    </div>
+
+    <!-- ── Options (shared) ── -->
+    <div style="margin-top:20px;padding-top:20px;border-top:1px solid var(--ivory)">
+      <label class="form-check">
+        <input type="checkbox" id="no-link-deps">
+        <span><strong>--no-link-deps</strong> — skip symlinking shared dependencies</span>
+      </label>
+    </div>
+
+    <div style="margin-top:24px">
+      <button type="submit" class="btn btn-senatus">Convene the Senate</button>
+    </div>
+
+  </form>
+</div>
+
+<!-- Output terminal -->
+<div class="terminal hidden" id="senatus-terminal">
+  <div class="terminal-bar">
+    <div class="terminal-dot r"></div>
+    <div class="terminal-dot y"></div>
+    <div class="terminal-dot g"></div>
+    <span class="terminal-title">senatus — The Senate Convenes</span>
+  </div>
+  <div class="terminal-body"></div>
+</div>
+
+<script>
+// Show/hide issue results on focus/blur
+const input = document.getElementById('issue-search');
+const results = document.getElementById('issue-results');
+if (input && results) {
+  input.addEventListener('focus', () => results.style.display = 'block');
+  document.addEventListener('click', e => {
+    if (!results.contains(e.target) && e.target !== input) {
+      results.style.display = 'none';
+    }
+  });
+}
+</script>
+{% endblock %}

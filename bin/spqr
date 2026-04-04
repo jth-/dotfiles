@@ -49,9 +49,24 @@ case "$subcmd" in
     esac
     ;;
 
+  web)
+    local port="${1:-7777}"
+    local web_dir="${${0:A}:h}/../web"
+    edictum "Starting SPQR Agent Manager on port $port..."
+    if ! python3 -c "import flask" &>/dev/null 2>&1; then
+      nota "Installing dependencies..."
+      pip install -q -r "$web_dir/requirements.txt"
+    fi
+    triumphus "Open http://127.0.0.1:$port in your browser"
+    exec python3 "$web_dir/server.py" --port "$port"
+    ;;
+
   help|--help|-h)
     spqr_banner "S.P.Q.R. Utilities"
     echo "Usage:"
+    echo ""
+    echo "  Web Dashboard:"
+    echo "    spqr web [port]                            Start the Agent Manager (default: 7777)"
     echo ""
     echo "  Templates:"
     echo "    spqr template create <name> <dump.sql>     Create template from SQL dump"

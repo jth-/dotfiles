@@ -1,0 +1,58 @@
+{% extends "base.html" %}
+{% set active = "censor" %}
+{% block title %}Censor{% endblock %}
+
+{% block content %}
+<div class="section-header">
+  <span class="section-numeral">III</span>
+  <h1 class="section-title">Censor</h1>
+  <div style="margin-left:auto">
+    <button class="btn btn-censor" id="start-review-btn" disabled>
+      Convene the Tribunal
+    </button>
+  </div>
+</div>
+
+<p class="section-desc">Select a pull request to open a review workspace with Claude as your tribune.</p>
+
+<div class="table-wrap">
+  <table class="table">
+    <thead>
+      <tr>
+        <th>PR</th>
+        <th>Title</th>
+        <th>Author</th>
+        <th>Diff</th>
+        <th>Files</th>
+        <th>Opened</th>
+      </tr>
+    </thead>
+    <tbody id="pr-table-body">
+      <tr>
+        <td colspan="6" style="text-align:center;padding:32px;color:var(--slate-light);font-style:italic">
+          Consulting the oracle…
+        </td>
+      </tr>
+    </tbody>
+  </table>
+</div>
+
+<div class="alert alert-omen hidden" id="pr-hint" style="margin-top:16px">
+  <span class="alert-icon">★</span>
+  <div>
+    <div class="alert-title" style="color:var(--gold-muted)">Omen — No gh CLI</div>
+    <div class="alert-text">Install the GitHub CLI (<code>gh</code>) to enable PR review sessions.</div>
+  </div>
+</div>
+
+<!-- Output terminal -->
+<div class="terminal hidden" id="censor-terminal" style="margin-top:24px">
+  <div class="terminal-bar">
+    <div class="terminal-dot r"></div>
+    <div class="terminal-dot y"></div>
+    <div class="terminal-dot g"></div>
+    <span class="terminal-title">censor — The Review Tribunal</span>
+  </div>
+  <div class="terminal-body"></div>
+</div>
+{% endblock %}

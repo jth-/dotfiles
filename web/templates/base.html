@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}SPQR{% endblock %} — Agent Manager</title>
+  <link rel="stylesheet" href="/static/spqr.css">
+</head>
+<body>
+<div class="page">
+
+  <!-- HEADER -->
+  <header class="header">
+    <a href="/" class="logo">
+      <div class="logo-mark">
+        <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="2" y="2" width="44" height="44" rx="6" stroke="#9b2226" stroke-width="2.5" fill="none"/>
+          <path d="M14 14h6v20h-6z" fill="#b8860b" opacity="0.2"/>
+          <path d="M28 14h6v20h-6z" fill="#b8860b" opacity="0.2"/>
+          <path d="M12 14h24" stroke="#2c2a27" stroke-width="2" stroke-linecap="round"/>
+          <path d="M14 14v20" stroke="#2c2a27" stroke-width="2.5" stroke-linecap="round"/>
+          <path d="M20 14v20" stroke="#2c2a27" stroke-width="2.5" stroke-linecap="round"/>
+          <path d="M28 14v20" stroke="#2c2a27" stroke-width="2.5" stroke-linecap="round"/>
+          <path d="M34 14v20" stroke="#2c2a27" stroke-width="2.5" stroke-linecap="round"/>
+          <path d="M14 24h6" stroke="#9b2226" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M28 24h6" stroke="#9b2226" stroke-width="1.5" stroke-linecap="round"/>
+          <path d="M10 34h28" stroke="#2c2a27" stroke-width="2" stroke-linecap="round"/>
+          <path d="M10 10l4 4M38 10l-4 4" stroke="#b8860b" stroke-width="1.5" stroke-linecap="round"/>
+        </svg>
+      </div>
+      <div class="logo-text">S<span>P</span>QR</div>
+    </a>
+    <div class="header-right">
+      <div class="status-pill">
+        <span class="dot"></span>
+        Agent Manager
+      </div>
+    </div>
+  </header>
+
+  <!-- NAV -->
+  <nav class="nav">
+    <a href="/"          {% if active == 'legions'   %}class="active"{% endif %}>Legions</a>
+    <a href="/senatus"   {% if active == 'senatus'   %}class="active"{% endif %}>Senatus</a>
+    <a href="/censor"    {% if active == 'censor'    %}class="active"{% endif %}>Censor</a>
+    <a href="/templates" {% if active == 'templates' %}class="active"{% endif %}>Templates</a>
+  </nav>
+
+  <!-- CONTENT -->
+  <main class="content">
+    {% block content %}{% endblock %}
+  </main>
+
+</div>
+
+<!-- MODAL -->
+<div class="modal-backdrop" id="modal-backdrop">
+  <div class="modal">
+    <div class="modal-title" id="modal-title">Confirm action</div>
+    <div class="modal-desc" id="modal-desc"></div>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="modal-cancel">Cancel</button>
+      <button class="btn btn-proscribe" id="modal-confirm">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
