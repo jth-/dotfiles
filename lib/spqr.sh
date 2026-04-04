@@ -119,6 +119,20 @@ spqr_close_workspace() {
 
 # ── Repo / Worktree Helpers ───────────────────────────────────────
 
+spqr_worktree_root() {
+  # Central worktree directory, outside of the project repo.
+  # Structure: ~/.spqr/worktrees/<repo-basename>/
+  local repo="$1"
+  local repo_name="${repo:t}"  # basename
+  printf "%s" "${HOME}/.spqr/worktrees/${repo_name}"
+}
+
+spqr_worktree_dir() {
+  # Full path for a specific branch's worktree
+  local repo="$1" branch="$2"
+  printf "%s/%s" "$(spqr_worktree_root "$repo")" "$branch"
+}
+
 spqr_detect_repo() {
   if [[ -n "${SPQR_REPO:-}" ]]; then
     printf "%s" "$SPQR_REPO"
@@ -137,7 +151,8 @@ spqr_detect_repo() {
 
 spqr_create_worktree() {
   local repo="$1" branch="$2"
-  local worktree_dir="$repo/.worktrees/$branch"
+  local worktree_dir
+  worktree_dir="$(spqr_worktree_dir "$repo" "$branch")"
 
   if [[ -d "$worktree_dir" ]]; then
     nota "Worktree already exists at $worktree_dir"
@@ -145,7 +160,7 @@ spqr_create_worktree() {
     return 0
   fi
 
-  mkdir -p "$repo/.worktrees"
+  mkdir -p "$(spqr_worktree_root "$repo")"
 
   if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch"; then
     git -C "$repo" worktree add "$worktree_dir" "$branch" >&2 || {

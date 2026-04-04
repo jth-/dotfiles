@@ -225,10 +225,13 @@ surface_ref_container="$(spqr_add_split "$ws_id" right)" || {
 }
 
 if [[ -n "$surface_ref_container" ]]; then
-  local worktree_dir="$repo/.worktrees/$branch_name"
+  local worktree_dir
+  worktree_dir="$(spqr_worktree_dir "$repo" "$branch_name")"
+  local wt_root
+  wt_root="$(spqr_worktree_root "$repo")"
   # Write a helper that waits for the plan, then opens a container shell
-  local wait_script="$repo/.worktrees/.senatus-wait-${branch_safe}.sh"
-  mkdir -p "$repo/.worktrees"
+  local wait_script="${wt_root}/.senatus-wait-${branch_safe}.sh"
+  mkdir -p "$wt_root"
   cat > "$wait_script" <<WAITEOF
 #!/usr/bin/env zsh
 echo 'Awaiting Acta Senatus...'
@@ -247,8 +250,11 @@ surface_ref_host="$(spqr_add_split "$ws_id" down)" || {
 }
 
 if [[ -n "$surface_ref_host" ]]; then
-  local worktree_dir="$repo/.worktrees/$branch_name"
-  local host_wait_script="$repo/.worktrees/.senatus-host-${branch_safe}.sh"
+  local worktree_dir
+  worktree_dir="$(spqr_worktree_dir "$repo" "$branch_name")"
+  local wt_root
+  wt_root="$(spqr_worktree_root "$repo")"
+  local host_wait_script="${wt_root}/.senatus-host-${branch_safe}.sh"
   cat > "$host_wait_script" <<WAITEOF
 #!/usr/bin/env zsh
 echo 'Awaiting Acta Senatus...'

@@ -175,8 +175,10 @@ done
 # ── Ritus IV: Razing the Castra (Worktrees) ──────────────────────
 edictum "Ritus IV: Razing the Castra"
 
-local worktree_dir="$repo/.worktrees/$branch"
-local review_worktree_dir="$repo/.worktrees/review-$branch"
+local worktree_dir
+worktree_dir="$(spqr_worktree_dir "$repo" "$branch")"
+local review_worktree_dir
+review_worktree_dir="$(spqr_worktree_dir "$repo" "review-$branch")"
 
 for wt in "$worktree_dir" "$review_worktree_dir"; do
   if [[ -d "$wt" ]]; then

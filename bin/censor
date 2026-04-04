@@ -204,13 +204,14 @@ git -C "$repo" fetch origin "$pr_branch" 2>/dev/null || {
 }
 
 # Create review worktree at the PR branch
-local worktree_dir="$repo/.worktrees/review-$pr_branch"
+local worktree_dir
+worktree_dir="$(spqr_worktree_dir "$repo" "review-$pr_branch")"
 
 if [[ -d "$worktree_dir" ]]; then
   nota "Review worktree already exists at $worktree_dir"
   local worktree="$worktree_dir"
 else
-  mkdir -p "$repo/.worktrees"
+  mkdir -p "$(spqr_worktree_root "$repo")"
   if git -C "$repo" show-ref --verify --quiet "refs/heads/$pr_branch"; then
     git -C "$repo" worktree add "$worktree_dir" "$pr_branch" 2>/dev/null
   elif git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/$pr_branch"; then
