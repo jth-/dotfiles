@@ -444,7 +444,7 @@ for ws in data.get('workspaces', []):
       for s in "${seen[@]}"; do
         [[ "$(spqr_container_name "$s")" == "$cname" ]] && already=true && break
       done
-      $already && continue
+      [[ "$already" == true ]] && continue
       printf "%s\tContainer\t%s\n" "$branch" "$status"
     done <<< "$containers"
   fi
@@ -468,12 +468,24 @@ spqr_ensure_infra() {
   while (( attempts < 30 )); do
     if docker exec spqr-postgres pg_isready -U spqr -q 2>/dev/null; then
       nota "Postgres ready"
+      break
+    fi
+    sleep 1
+    ((attempts++))
+  done
+  (( attempts >= 30 )) && caveat "Postgres may not be ready yet — continuing anyway"
+
+  # Wait for Caddy to be responsive
+  attempts=0
+  while (( attempts < 15 )); do
+    if docker exec spqr-caddy caddy version >/dev/null 2>&1; then
+      nota "Caddy ready"
       return 0
     fi
     sleep 1
     ((attempts++))
   done
-  caveat "Postgres may not be ready yet — continuing anyway"
+  caveat "Caddy may not be ready yet — preview sites may need manual reload"
 }
 
 spqr_ensure_image() {
@@ -530,7 +542,7 @@ spqr_start_container() {
   db_name="$(spqr_db_name "$branch")"
 
   # Stop existing container if present
-  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${container_name}$"; then
+  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qxF "$container_name"; then
     nota "Removing existing container $container_name..."
     docker rm -f "$container_name" >/dev/null 2>&1
   fi
@@ -622,7 +634,7 @@ spqr_stop_container() {
   db_name="$(spqr_db_name "$branch")"
 
   # Stop container
-  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${container_name}$"; then
+  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qxF "$container_name"; then
     nota "Stopping container $container_name..."
     docker rm -f "$container_name" >/dev/null 2>&1
   fi
@@ -630,7 +642,7 @@ spqr_stop_container() {
   # Drop the workspace database
   if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^spqr-postgres$'; then
     docker exec spqr-postgres \
-      psql -U spqr -d postgres -c "DROP DATABASE IF EXISTS $db_name" >/dev/null 2>&1 && \
+      psql -U spqr -d postgres -c "DROP DATABASE IF EXISTS \"$db_name\"" >/dev/null 2>&1 && \
       nota "Dropped database $db_name" || true
   fi
 }
@@ -841,10 +853,20 @@ http://${slug}.localhost:4000 {
 }
 EOF
 
-  # Reload Caddy config
-  docker exec spqr-caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null && \
-    nota "Registered preview: http://${slug}.localhost:4000" || \
+  # Reload Caddy config (retry up to 3 times if Caddy isn't ready yet)
+  local reload_ok=false
+  for _attempt in 1 2 3; do
+    if docker exec spqr-caddy caddy reload --config /etc/caddy/Caddyfile 2>/dev/null; then
+      reload_ok=true
+      break
+    fi
+    sleep 1
+  done
+  if [[ "$reload_ok" == true ]]; then
+    nota "Registered preview: http://${slug}.localhost:4000"
+  else
     caveat "Could not reload Caddy — preview may not work until next restart"
+  fi
 }
 
 spqr_unregister_site() {
@@ -861,6 +883,79 @@ spqr_unregister_site() {
   fi
 }
 
+spqr_cleanup_orphans() {
+  # Find and stop containers that have no corresponding cmux workspace.
+  # Returns the number of orphans cleaned up.
+  local cleaned=0
+
+  # Get active workspace branches from cmux
+  local ws_branches=()
+  if command -v cmux &>/dev/null; then
+    local ws_json
+    ws_json="$(cmux --json list-workspaces 2>/dev/null)" || true
+    if [[ -n "$ws_json" ]]; then
+      local branches_raw
+      branches_raw="$(python3 -c "
+import json, sys
+data = json.loads(sys.stdin.read())
+for ws in data.get('workspaces', []):
+    title = ws.get('title', '')
+    for prefix in ('SPQR:', 'CENSOR:'):
+        if title.startswith(prefix):
+            print(title[len(prefix):])
+            break
+" <<< "$ws_json" 2>/dev/null)"
+      while IFS= read -r b; do
+        [[ -n "$b" ]] && ws_branches+=("$b")
+      done <<< "$branches_raw"
+    fi
+  fi
+
+  # Check all spqr-* containers
+  local containers
+  containers="$(docker ps --filter 'name=spqr-' --format '{{.Names}}' 2>/dev/null)" || return 0
+  [[ -z "$containers" ]] && return 0
+
+  while IFS= read -r cname; do
+    # Skip infrastructure containers
+    [[ "$cname" == "spqr-postgres" || "$cname" == "spqr-caddy" ]] && continue
+
+    # Check if any workspace maps to this container
+    local has_workspace=false
+    for wb in "${ws_branches[@]}"; do
+      if [[ "$(spqr_container_name "$wb")" == "$cname" ]]; then
+        has_workspace=true
+        break
+      fi
+      # Also check review- prefix
+      if [[ "$(spqr_container_name "review-$wb")" == "$cname" ]]; then
+        has_workspace=true
+        break
+      fi
+    done
+
+    if [[ "$has_workspace" == false ]]; then
+      local branch="${cname#spqr-}"
+      nota "Orphan container: $cname (no matching workspace)"
+      if [[ "${1:-}" == "--auto" ]]; then
+        spqr_stop_container "$branch"
+        spqr_unregister_site "$branch"
+        ((cleaned++))
+      else
+        printf "${SPQR_BRONZE}  Stop orphan container $cname? [Y/n] ${SPQR_RESET}"
+        read -r response
+        if [[ ! "$response" =~ ^[Nn]$ ]]; then
+          spqr_stop_container "$branch"
+          spqr_unregister_site "$branch"
+          ((cleaned++))
+        fi
+      fi
+    fi
+  done <<< "$containers"
+
+  return 0
+}
+
 spqr_slugify() {
   # Convert a string to a URL/branch-safe slug
   local input="$1"
@@ -874,8 +969,13 @@ spqr_slugify() {
 
 # ── Direct Invocation Dispatch ────────────────────────────────────
 # Allows fzf --bind reload(...) to call library functions in a subshell.
-# Usage: source spqr.sh --fn <function_name> [args...]
-if [[ "${1:-}" == "--fn" ]]; then
+# Usage: zsh /path/to/spqr.sh --fn <function_name> [args...]
+#
+# When invoked this way (not sourced), the file is executed as a script.
+# All functions above are defined, then the requested function is called.
+# Environment variables (LINEAR_API_KEY, etc.) must be exported by the
+# caller for them to propagate into this subshell.
+if [[ "${ZSH_EVAL_CONTEXT:-}" == "toplevel" && "${1:-}" == "--fn" ]]; then
   shift
   "$@"
 fi

@@ -303,8 +303,8 @@ printf "%b" "$review_prompt" > "$prompt_file"
 local launcher="$worktree/.censor-launch.sh"
 cat > "$launcher" <<LAUNCHER
 #!/usr/bin/env zsh
-exec docker exec -it $container_name \
-  claude --dangerously-skip-permissions --append-system-prompt "\$(cat '$prompt_file')" "Begin the code review."
+exec docker exec -it "${container_name}" \
+  claude --dangerously-skip-permissions --append-system-prompt "\$(cat '${prompt_file}')" "Begin the code review."
 LAUNCHER
 chmod +x "$launcher"
 
@@ -325,14 +325,14 @@ cmux rename-workspace --workspace "$ws_id" "$ws_title" >/dev/null 2>&1
 local surface_ref_container
 surface_ref_container="$(spqr_add_split "$ws_id" right)" || true
 if [[ -n "$surface_ref_container" ]]; then
-  spqr_send "$ws_id" "$surface_ref_container" "docker exec -it $container_name /bin/bash"
+  spqr_send "$ws_id" "$surface_ref_container" "docker exec -it '$container_name' /bin/bash"
 fi
 
 # Host shell pane (for git)
 local surface_ref_host
 surface_ref_host="$(spqr_add_split "$ws_id" down)" || true
 if [[ -n "$surface_ref_host" ]]; then
-  spqr_send "$ws_id" "$surface_ref_host" "cd $worktree && exec \$SHELL -l"
+  spqr_send "$ws_id" "$surface_ref_host" "cd '$worktree' && exec \$SHELL -l"
 fi
 
 # Switch to workspace

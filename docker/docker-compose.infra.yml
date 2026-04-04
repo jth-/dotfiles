@@ -15,7 +15,7 @@ services:
       POSTGRES_PASSWORD: spqr
       POSTGRES_DB: spqr
     ports:
-      - "5432:5432"
+      - "127.0.0.1:5432:5432"
     volumes:
       - spqr-pgdata:/var/lib/postgresql/data
     networks:
@@ -31,7 +31,7 @@ services:
     container_name: spqr-caddy
     restart: unless-stopped
     ports:
-      - "4000:4000"
+      - "127.0.0.1:4000:4000"
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - ./caddy/sites:/etc/caddy/sites:ro

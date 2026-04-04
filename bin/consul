@@ -46,50 +46,47 @@ nota "Fetching decree $issue_id from Linear..."
 local linear_json="" issue_title="" issue_desc="" branch_name="" parent_context="" project_context=""
 
 linear_json="$(spqr_query_linear "$issue_id" 2>/dev/null)" && {
-  issue_title="$(python3 -c "
+  # Parse all fields in a single Python invocation using NUL-delimited output
+  local parsed
+  parsed="$(python3 -c "
 import json, sys
 data = json.loads(sys.stdin.read())
 issue = data.get('data', {}).get('issue', {})
-print(issue.get('title', ''))
-" <<< "$linear_json")"
 
-  issue_desc="$(python3 -c "
-import json, sys
-data = json.loads(sys.stdin.read())
-issue = data.get('data', {}).get('issue', {})
-print(issue.get('description', '') or '')
-" <<< "$linear_json")"
+title = issue.get('title', '')
+desc = issue.get('description', '') or ''
+branch = issue.get('branchName', '') or ''
 
-  branch_name="$(python3 -c "
-import json, sys
-data = json.loads(sys.stdin.read())
-issue = data.get('data', {}).get('issue', {})
-print(issue.get('branchName', '') or '')
-" <<< "$linear_json")"
-
-  parent_context="$(python3 -c "
-import json, sys
-data = json.loads(sys.stdin.read())
-issue = data.get('data', {}).get('issue', {})
+parent_lines = ''
 parent = issue.get('parent') or {}
 if parent:
-    print(f\"{parent.get('identifier', '')}: {parent.get('title', '')}\")
-    desc = parent.get('description', '') or ''
-    if desc:
-        print(desc[:500])
-" <<< "$linear_json")"
+    parent_lines = f\"{parent.get('identifier', '')}: {parent.get('title', '')}\"
+    pdesc = parent.get('description', '') or ''
+    if pdesc:
+        parent_lines += '\n' + pdesc[:500]
 
-  project_context="$(python3 -c "
-import json, sys
-data = json.loads(sys.stdin.read())
-issue = data.get('data', {}).get('issue', {})
+project_lines = ''
 proj = issue.get('project') or {}
 if proj:
-    print(f\"Project: {proj.get('name', '')}\")
-    desc = proj.get('description', '') or ''
-    if desc:
-        print(desc[:500])
+    project_lines = f\"Project: {proj.get('name', '')}\"
+    pdesc = proj.get('description', '') or ''
+    if pdesc:
+        project_lines += '\n' + pdesc[:500]
+
+# NUL-delimited fields for safe shell parsing
+sys.stdout.write(title + '\0')
+sys.stdout.write(desc + '\0')
+sys.stdout.write(branch + '\0')
+sys.stdout.write(parent_lines + '\0')
+sys.stdout.write(project_lines + '\0')
 " <<< "$linear_json")"
+
+  # Split NUL-delimited fields
+  issue_title="${parsed%%$'\0'*}";    parsed="${parsed#*$'\0'}"
+  issue_desc="${parsed%%$'\0'*}";     parsed="${parsed#*$'\0'}"
+  branch_name="${parsed%%$'\0'*}";    parsed="${parsed#*$'\0'}"
+  parent_context="${parsed%%$'\0'*}"; parsed="${parsed#*$'\0'}"
+  project_context="${parsed%%$'\0'*}"
 
   if [[ -n "$issue_title" ]]; then
     triumphus "Found: $issue_id — $issue_title"

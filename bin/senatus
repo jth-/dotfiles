@@ -43,6 +43,9 @@ if [[ -z "$issue_id" && -z "$adhoc_name" ]] && spqr_require_fzf; then
   local fzf_input=""
   local has_linear=false
 
+  # Export LINEAR_API_KEY so fzf subshells (reload, preview) can access it
+  [[ -n "${LINEAR_API_KEY:-}" ]] && export LINEAR_API_KEY
+
   if [[ -n "${LINEAR_API_KEY:-}" ]]; then
     nota "Fetching your assigned issues..."
     fzf_input="$(spqr_linear_my_issues 2>/dev/null)" && has_linear=true || true
@@ -60,9 +63,9 @@ ${fzf_input}"
     --no-multi
     --ansi
     --preview-window=right:50%:wrap
-    --preview="source $SPQR_LIB/spqr.sh --fn spqr_linear_issue_preview {1}"
-    --bind="ctrl-s:reload(source $SPQR_LIB/spqr.sh --fn spqr_linear_search {q})+change-prompt(Search \u25b8 )"
-    --bind="ctrl-a:reload(source $SPQR_LIB/spqr.sh --fn spqr_linear_my_issues)+change-prompt(My Issues \u25b8 )"
+    --preview="zsh $SPQR_LIB/spqr.sh --fn spqr_linear_issue_preview {1}"
+    --bind="ctrl-s:reload(zsh $SPQR_LIB/spqr.sh --fn spqr_linear_search {q})+change-prompt(Search \u25b8 )"
+    --bind="ctrl-a:reload(zsh $SPQR_LIB/spqr.sh --fn spqr_linear_my_issues)+change-prompt(My Issues \u25b8 )"
     ${(z)$(spqr_fzf_theme)}
   )
 
@@ -128,21 +131,21 @@ if [[ -z "$issue_id" ]]; then
   ws_id="$(spqr_create_workspace "$repo" "$ws_title")" || exit 1
 
   # Main pane: Claude in container
-  local claude_cmd="docker exec -it $container_name claude --dangerously-skip-permissions"
+  local claude_cmd="docker exec -it '$container_name' claude --dangerously-skip-permissions"
   spqr_send "$ws_id" "" "$claude_cmd"
 
   # Container shell pane (for dev server, tests)
   local surface_ref_container
   surface_ref_container="$(spqr_add_split "$ws_id" right)" || true
   if [[ -n "$surface_ref_container" ]]; then
-    spqr_send "$ws_id" "$surface_ref_container" "docker exec -it $container_name /bin/bash"
+    spqr_send "$ws_id" "$surface_ref_container" "docker exec -it '$container_name' /bin/bash"
   fi
 
   # Host shell pane (for git)
   local surface_ref_host
   surface_ref_host="$(spqr_add_split "$ws_id" down)" || true
   if [[ -n "$surface_ref_host" ]]; then
-    spqr_send "$ws_id" "$surface_ref_host" "cd $worktree && exec \$SHELL -l"
+    spqr_send "$ws_id" "$surface_ref_host" "cd '$worktree' && exec \$SHELL -l"
   fi
 
   cmux select-workspace --workspace "$ws_id"
@@ -206,7 +209,7 @@ edictum "Ritus II: Dispatching the Consul"
 
 # Resolve the real path of consul (it may be a symlink in ~/bin/)
 local consul_path="${${0:A}:h}/consul"
-local consul_cmd="$consul_path $issue_id ${passthrough_args[*]}"
+local consul_cmd="'$consul_path' '$issue_id' ${passthrough_args[*]}"
 
 nota "Running: consul $issue_id ${passthrough_args[*]}"
 spqr_send "$ws_id" "" "$consul_cmd"
@@ -237,10 +240,10 @@ if [[ -n "$surface_ref_container" ]]; then
 echo 'Awaiting Acta Senatus...'
 cmux wait-for ACTA_READY_${branch_safe} --timeout 300 2>/dev/null
 echo 'Container shell ready — use this for dev server, tests, etc.'
-exec docker exec -it ${container_name} /bin/bash
+exec docker exec -it "${container_name}" /bin/bash
 WAITEOF
   chmod +x "$wait_script"
-  spqr_send "$ws_id" "$surface_ref_container" "source $wait_script"
+  spqr_send "$ws_id" "$surface_ref_container" "source '$wait_script'"
 fi
 
 # Host shell pane (for git operations)
@@ -259,11 +262,11 @@ if [[ -n "$surface_ref_host" ]]; then
 #!/usr/bin/env zsh
 echo 'Awaiting Acta Senatus...'
 cmux wait-for ACTA_READY_${branch_safe} --timeout 300 2>/dev/null
-cd "$worktree_dir" 2>/dev/null && echo "Git shell ready in worktree: $branch_name"
+cd "${worktree_dir}" 2>/dev/null && echo "Git shell ready in worktree: ${branch_name}"
 exec \$SHELL -l
 WAITEOF
   chmod +x "$host_wait_script"
-  spqr_send "$ws_id" "$surface_ref_host" "source $host_wait_script"
+  spqr_send "$ws_id" "$surface_ref_host" "source '$host_wait_script'"
 fi
 
 # ── Switch to workspace ──────────────────────────────────────────
