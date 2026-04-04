@@ -546,6 +546,19 @@ spqr_start_container() {
     -e "PGPASSWORD=spqr"
   )
 
+  # Check for a DB template configuration
+  # .spqr/template — single line containing the template database name
+  local repo_root
+  repo_root="$(cd "$worktree" && git rev-parse --show-toplevel 2>/dev/null || echo "$worktree")"
+  local template_name=""
+  for tf in "$worktree/.spqr/template" "$repo_root/.spqr/template"; do
+    if [[ -f "$tf" ]]; then
+      template_name="$(head -1 "$tf" | tr -d '[:space:]')"
+      break
+    fi
+  done
+  [[ -n "$template_name" ]] && env_args+=(-e "SPQR_DB_TEMPLATE=$template_name")
+
   # Pass through ANTHROPIC_API_KEY (required for Claude)
   [[ -n "${ANTHROPIC_API_KEY:-}" ]] && env_args+=(-e "ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
 
@@ -627,6 +640,94 @@ spqr_exec() {
   local container_name="$1"
   shift
   docker exec -it "$container_name" "$@"
+}
+
+# ── Database Template Management ─────────────────────────────────
+
+spqr_db_template() {
+  # Create or refresh a Postgres template database.
+  #
+  # Usage:
+  #   spqr_db_template create <name> <dump_file>   — load a pg_dump into a template
+  #   spqr_db_template create <name> --from <dburl> — copy from an existing database
+  #   spqr_db_template list                         — list available templates
+  #   spqr_db_template drop <name>                  — remove a template
+  #
+  # Templates are regular databases in the spqr-postgres container that
+  # the entrypoint uses via CREATE DATABASE ... TEMPLATE.
+
+  local subcmd="${1:-list}"
+  shift 2>/dev/null || true
+
+  spqr_ensure_infra
+
+  local pg_exec="docker exec spqr-postgres"
+  local psql_cmd="$pg_exec psql -U spqr -d postgres"
+
+  case "$subcmd" in
+    create)
+      local name="${1:?Template name required}"
+      shift
+
+      # Drop existing template to allow refresh
+      $psql_cmd -c "DROP DATABASE IF EXISTS \"$name\"" >/dev/null 2>&1
+      $psql_cmd -c "CREATE DATABASE \"$name\"" >/dev/null 2>&1 || {
+        perfidia "Failed to create template database $name"
+        return 1
+      }
+
+      if [[ "${1:-}" == "--from" ]]; then
+        local source_url="${2:?Source database URL required}"
+        nota "Dumping from $source_url into template $name..."
+        pg_dump --no-owner --no-privileges "$source_url" | \
+          $pg_exec psql -U spqr -d "$name" >/dev/null 2>&1 && \
+          triumphus "Template $name created from remote database" || {
+          perfidia "Failed to load dump into template $name"
+          return 1
+        }
+      elif [[ -f "${1:-}" ]]; then
+        local dump_file="$1"
+        nota "Loading $dump_file into template $name..."
+        cat "$dump_file" | $pg_exec psql -U spqr -d "$name" >/dev/null 2>&1 && \
+          triumphus "Template $name created from $dump_file" || {
+          perfidia "Failed to load $dump_file into template $name"
+          return 1
+        }
+      else
+        triumphus "Empty template $name created"
+        nota "Load data with: pg_dump ... | docker exec -i spqr-postgres psql -U spqr -d $name"
+      fi
+
+      # Mark as template so Postgres disallows connections by default
+      $psql_cmd -c "ALTER DATABASE \"$name\" IS_TEMPLATE = true" >/dev/null 2>&1
+
+      nota "To use this template, create .spqr/template in your repo:"
+      nota "  echo '$name' > .spqr/template"
+      ;;
+
+    list)
+      edictum "Available templates:"
+      $pg_exec psql -U spqr -d postgres \
+        -c "SELECT datname AS template, pg_size_pretty(pg_database_size(datname)) AS size FROM pg_database WHERE datistemplate = true AND datname NOT LIKE 'template%'" \
+        --no-align --tuples-only 2>/dev/null | while IFS='|' read -r name size; do
+        nota "$name ($size)"
+      done
+      ;;
+
+    drop)
+      local name="${1:?Template name required}"
+      # Un-mark as template first (required before DROP)
+      $psql_cmd -c "ALTER DATABASE \"$name\" IS_TEMPLATE = false" >/dev/null 2>&1
+      $psql_cmd -c "DROP DATABASE IF EXISTS \"$name\"" >/dev/null 2>&1 && \
+        triumphus "Template $name dropped" || \
+        perfidia "Failed to drop template $name"
+      ;;
+
+    *)
+      perfidia "Unknown subcommand: $subcmd (use create, list, or drop)"
+      return 1
+      ;;
+  esac
 }
 
 # ── Caddy Site Management ─────────────────────────────────────────

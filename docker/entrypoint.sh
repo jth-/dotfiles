@@ -41,6 +41,8 @@ if [[ -n "${DATABASE_URL:-}" && -n "${SPQR_DB_NAME:-}" ]]; then
   PG_HOST="${PGHOST:-postgres}"
   PG_PORT="${PGPORT:-5432}"
   PG_USER="${PGUSER:-spqr}"
+  PG_CONNSTR="postgresql://${PG_USER}:${PGPASSWORD:-spqr}@${PG_HOST}:${PG_PORT}/postgres"
+  SPQR_TEMPLATE="${SPQR_DB_TEMPLATE:-}"
 
   # Wait for Postgres to be ready (up to 30s)
   for i in $(seq 1 30); do
@@ -51,20 +53,35 @@ if [[ -n "${DATABASE_URL:-}" && -n "${SPQR_DB_NAME:-}" ]]; then
   done
 
   # Create the workspace database if it doesn't exist
-  if psql "postgresql://${PG_USER}:${PGPASSWORD:-spqr}@${PG_HOST}:${PG_PORT}/postgres" \
+  if psql "$PG_CONNSTR" \
        -tc "SELECT 1 FROM pg_database WHERE datname = '${SPQR_DB_NAME}'" 2>/dev/null | grep -q 1; then
     echo "[spqr] Database ${SPQR_DB_NAME} already exists"
   else
-    createdb -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" "$SPQR_DB_NAME" 2>/dev/null && \
-      echo "[spqr] Created database ${SPQR_DB_NAME}" || \
-      echo "[spqr] Warning: Could not create database ${SPQR_DB_NAME}"
-  fi
+    if [[ -n "$SPQR_TEMPLATE" ]]; then
+      # Check if the template exists
+      if psql "$PG_CONNSTR" \
+           -tc "SELECT 1 FROM pg_database WHERE datname = '${SPQR_TEMPLATE}'" 2>/dev/null | grep -q 1; then
+        psql "$PG_CONNSTR" \
+          -c "CREATE DATABASE \"${SPQR_DB_NAME}\" TEMPLATE \"${SPQR_TEMPLATE}\"" 2>/dev/null && \
+          echo "[spqr] Created database ${SPQR_DB_NAME} from template ${SPQR_TEMPLATE}" || \
+          echo "[spqr] Warning: Template copy failed — falling back to empty database"
+      else
+        echo "[spqr] Warning: Template ${SPQR_TEMPLATE} not found — creating empty database"
+        createdb -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" "$SPQR_DB_NAME" 2>/dev/null || \
+          echo "[spqr] Warning: Could not create database ${SPQR_DB_NAME}"
+      fi
+    else
+      createdb -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" "$SPQR_DB_NAME" 2>/dev/null && \
+        echo "[spqr] Created database ${SPQR_DB_NAME}" || \
+        echo "[spqr] Warning: Could not create database ${SPQR_DB_NAME}"
+    fi
 
-  # Run seed/migration scripts if the project provides them
-  if [[ -f /workspace/db/seed.sql ]]; then
-    psql "$DATABASE_URL" -f /workspace/db/seed.sql 2>/dev/null && \
-      echo "[spqr] Ran db/seed.sql" || \
-      echo "[spqr] Warning: db/seed.sql failed"
+    # Run seed script if no template was used and seed exists
+    if [[ -z "$SPQR_TEMPLATE" && -f /workspace/db/seed.sql ]]; then
+      psql "$DATABASE_URL" -f /workspace/db/seed.sql 2>/dev/null && \
+        echo "[spqr] Ran db/seed.sql" || \
+        echo "[spqr] Warning: db/seed.sql failed"
+    fi
   fi
 fi
 

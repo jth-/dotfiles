@@ -1,0 +1,61 @@
+#!/usr/bin/env zsh
+# spqr — S.P.Q.R. utility commands
+#
+# Usage:
+#   spqr template create <name> <dump.sql>     Create template from SQL dump
+#   spqr template create <name> --from <url>   Create template from live database
+#   spqr template list                         List available templates
+#   spqr template drop <name>                  Remove a template
+#   spqr infra up                              Start infrastructure (Postgres + Caddy)
+#   spqr infra down                            Stop infrastructure
+
+set -euo pipefail
+
+SPQR_LIB="${${0:A}:h}/../lib"
+source "$SPQR_LIB/spqr.sh"
+
+local subcmd="${1:-help}"
+shift 2>/dev/null || true
+
+case "$subcmd" in
+  template|tpl)
+    spqr_db_template "$@"
+    ;;
+
+  infra)
+    local action="${1:-up}"
+    case "$action" in
+      up)
+        spqr_ensure_infra
+        triumphus "Infrastructure running"
+        ;;
+      down)
+        edictum "Stopping S.P.Q.R. infrastructure..."
+        docker compose -f "$SPQR_DOCKER_DIR/docker-compose.infra.yml" down 2>&1 | while read -r line; do
+          nota "$line"
+        done
+        triumphus "Infrastructure stopped"
+        ;;
+      *)
+        perfidia "Unknown infra action: $action (use up or down)"
+        exit 1
+        ;;
+    esac
+    ;;
+
+  help|--help|-h)
+    spqr_banner "S.P.Q.R. Utilities"
+    echo "Usage:"
+    echo "  spqr template create <name> <dump.sql>     Create template from SQL dump"
+    echo "  spqr template create <name> --from <url>   Create template from live database"
+    echo "  spqr template list                         List available templates"
+    echo "  spqr template drop <name>                  Remove a template"
+    echo "  spqr infra up                              Start infrastructure"
+    echo "  spqr infra down                            Stop infrastructure"
+    ;;
+
+  *)
+    perfidia "Unknown command: $subcmd (try 'spqr help')"
+    exit 1
+    ;;
+esac
