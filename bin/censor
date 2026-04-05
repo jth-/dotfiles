@@ -1,6 +1,7 @@
 #!/usr/bin/env zsh
 # censor — The Review Tribunal
-# Creates a review workspace for a GitHub PR with Claude and a shell pane.
+# Creates a review workspace for a GitHub PR with Claude running in a
+# Docker container and shell panes for manual inspection.
 #
 # Usage: censor <PR-NUMBER> [--depth=N]
 
@@ -26,13 +27,78 @@ for arg in "$@"; do
   esac
 done
 
-if [[ -z "$pr_number" ]]; then
-  perfidia "Usage: censor <PR-NUMBER> [--depth=N]"
+if ! command -v gh &>/dev/null; then
+  perfidia "gh (GitHub CLI) is required for censor"
   exit 1
 fi
 
-if ! command -v gh &>/dev/null; then
-  perfidia "gh (GitHub CLI) is required for censor"
+# ── Interactive Selection (no PR number) ──────────────────────────
+if [[ -z "$pr_number" ]] && spqr_require_fzf; then
+  spqr_banner "CENSOR — Select a Petition"
+
+  nota "Fetching PRs awaiting your review..."
+
+  # Fetch PRs needing review from me
+  local review_prs=""
+  review_prs="$(gh pr list --search "review-requested:@me" --state open --limit 25 \
+    --json number,title,author,additions,deletions,headRefName \
+    --jq '.[] | "#\(.number)\t\(.author.login)\t+\(.additions)/-\(.deletions)\t\(.title)"' 2>/dev/null)" || true
+
+  # Fetch other recent open PRs
+  local other_prs=""
+  other_prs="$(gh pr list --state open --limit 25 \
+    --json number,title,author,additions,deletions,headRefName \
+    --jq '.[] | "#\(.number)\t\(.author.login)\t+\(.additions)/-\(.deletions)\t\(.title)"' 2>/dev/null)" || true
+
+  # Merge: review-requested first, then others (deduplicating)
+  local fzf_input=""
+  if [[ -n "$review_prs" ]]; then
+    fzf_input="$review_prs"
+  fi
+  if [[ -n "$other_prs" ]]; then
+    # Deduplicate by PR number
+    local seen_prs=""
+    [[ -n "$review_prs" ]] && seen_prs="$review_prs"
+    while IFS= read -r line; do
+      local pr_num="${line%%$'\t'*}"
+      if [[ -n "$seen_prs" ]] && printf "%s" "$seen_prs" | grep -q "^${pr_num}$(printf '\t')"; then
+        continue
+      fi
+      [[ -n "$fzf_input" ]] && fzf_input+=$'\n'
+      fzf_input+="$line"
+    done <<< "$other_prs"
+  fi
+
+  if [[ -z "$fzf_input" ]]; then
+    perfidia "No open PRs found"
+    exit 1
+  fi
+
+  local fzf_args=(
+    --header=$'CENSOR \u2014 Select a petition to review  \u2502  Esc: cancel'
+    --prompt="Filter \u25b8 "
+    --delimiter=$'\t'
+    --with-nth=1,2,3,4
+    --no-multi
+    --ansi
+    --preview-window=right:50%:wrap
+    --preview='gh pr view ${1/#\#/} --json title,body,author,additions,deletions,headRefName,baseRefName,files --jq "\"PR \" + (.title) + \"\nAuthor: \" + (.author.login) + \"\nBranch: \" + (.headRefName) + \" -> \" + (.baseRefName) + \"\n+\" + (.additions|tostring) + \" -\" + (.deletions|tostring) + \" across \" + (.files|length|tostring) + \" files\n\" + \"─\"*50 + \"\n\" + (.body // \"(no description)\")"'
+    ${(z)$(spqr_fzf_theme)}
+  )
+
+  local selection
+  selection="$(printf "%s" "$fzf_input" | fzf "${fzf_args[@]}")" || {
+    nota "Selection cancelled"
+    exit 0
+  }
+
+  # Extract PR number (strip the # prefix)
+  pr_number="${selection%%$'\t'*}"
+  pr_number="${pr_number#\#}"
+fi
+
+if [[ -z "$pr_number" ]]; then
+  perfidia "Usage: censor <PR-NUMBER> [--depth=N]"
   exit 1
 fi
 
@@ -137,14 +203,15 @@ git -C "$repo" fetch origin "$pr_branch" 2>/dev/null || {
   caveat "Could not fetch $pr_branch — it may already be local"
 }
 
-# Create review worktree at the PR branch (prefer tracking branch over detached HEAD)
-local worktree_dir="$repo/.worktrees/review-$pr_branch"
+# Create review worktree at the PR branch
+local worktree_dir
+worktree_dir="$(spqr_worktree_dir "$repo" "review-$pr_branch")"
 
 if [[ -d "$worktree_dir" ]]; then
   nota "Review worktree already exists at $worktree_dir"
   local worktree="$worktree_dir"
 else
-  mkdir -p "$repo/.worktrees"
+  mkdir -p "$(spqr_worktree_root "$repo")"
   if git -C "$repo" show-ref --verify --quiet "refs/heads/$pr_branch"; then
     git -C "$repo" worktree add "$worktree_dir" "$pr_branch" 2>/dev/null
   elif git -C "$repo" show-ref --verify --quiet "refs/remotes/origin/$pr_branch"; then
@@ -165,6 +232,20 @@ fi
 spqr_link_deps "$repo" "$worktree"
 nota "Review worktree: $worktree"
 
+# ── Start container for the review ───────────────────────────────
+spqr_ensure_infra
+spqr_ensure_image
+
+local image
+image="$(spqr_ensure_project_image "$repo" "$(basename "$repo")")"
+
+local review_branch="review-$pr_branch"
+local container_name
+container_name="$(spqr_start_container "$review_branch" "$worktree" "$image")" || exit 1
+nota "Container: $container_name"
+
+spqr_register_site "$review_branch"
+
 # ── Ritus IV: The Censor Takes the Bench ──────────────────────────
 edictum "Ritus IV: The Censor Takes the Bench"
 
@@ -180,13 +261,11 @@ if [[ -n "$existing_ws" ]]; then
   exit 0
 fi
 
-# Build the review prompt and write to a launcher script
-# (avoids shell interpretation issues when sent via cmux send)
+# Build the review prompt
 local review_prompt="You are a senior engineer conducting a code review of PR #$pr_number: $pr_title.
 
 PR URL: $pr_url
-Branch: $pr_branch
-Worktree: $worktree"
+Branch: $pr_branch"
 
 if [[ -n "$linear_context" ]]; then
   review_prompt+="\n\nThe following Linear issue(s) are linked to this PR and provide context for the intended changes:\n$linear_context"
@@ -218,19 +297,18 @@ Focus your review on:
 Be direct and specific. Note both issues and things done well. Your verdict determines whether this branch will be integrated into the codebase."
 
 # Write the prompt to a file and create a launcher script
-# (cmux send mangles special chars, so we launch claude via --command instead)
 local prompt_file="$worktree/.censor-prompt.txt"
 printf "%b" "$review_prompt" > "$prompt_file"
 
 local launcher="$worktree/.censor-launch.sh"
 cat > "$launcher" <<LAUNCHER
 #!/usr/bin/env zsh
-cd '$worktree'
-exec claude --append-system-prompt "\$(cat '$prompt_file')" "Begin the code review."
+exec docker exec -it "${container_name}" \
+  claude --dangerously-skip-permissions --append-system-prompt "\$(cat '${prompt_file}')" "Begin the code review."
 LAUNCHER
 chmod +x "$launcher"
 
-# Create workspace with claude as the initial command (no cmux send needed)
+# Create workspace with claude as the initial command
 local ws_output
 ws_output="$(cmux new-workspace --command "$launcher" 2>&1)" || {
   perfidia "Failed to create cmux workspace"
@@ -243,11 +321,18 @@ if [[ -z "$ws_id" || "$ws_id" == "$ws_output" ]]; then
 fi
 cmux rename-workspace --workspace "$ws_id" "$ws_title" >/dev/null 2>&1
 
-# Right surface: shell in the worktree
-local surface_ref
-surface_ref="$(spqr_add_split "$ws_id" right)" || true
-if [[ -n "$surface_ref" ]]; then
-  spqr_send "$ws_id" "$surface_ref" "cd $worktree"
+# Container shell pane (for dev server, tests)
+local surface_ref_container
+surface_ref_container="$(spqr_add_split "$ws_id" right)" || true
+if [[ -n "$surface_ref_container" ]]; then
+  spqr_send "$ws_id" "$surface_ref_container" "docker exec -it '$container_name' /bin/bash"
+fi
+
+# Host shell pane (for git)
+local surface_ref_host
+surface_ref_host="$(spqr_add_split "$ws_id" down)" || true
+if [[ -n "$surface_ref_host" ]]; then
+  spqr_send "$ws_id" "$surface_ref_host" "cd '$worktree' && exec \$SHELL -l"
 fi
 
 # Switch to workspace
@@ -257,3 +342,5 @@ cmux select-workspace --workspace "$ws_id"
 cmux set-status censor "Reviewing PR #$pr_number" --icon sparkle --color "#C0392B" --workspace "$ws_id" 2>/dev/null || true
 
 triumphus "The Censor is reviewing PR #$pr_number"
+nota "Container: $container_name"
+nota "Preview: http://review-${pr_branch//[^a-zA-Z0-9_-]/-}.localhost:4000"

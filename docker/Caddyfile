@@ -1,0 +1,14 @@
+# S.P.Q.R. Reverse Proxy — Base Configuration
+# Per-workspace site configs are imported from ./caddy/sites/
+
+{
+	auto_https off
+}
+
+# Default catch-all on :4000 — lists active workspaces
+:4000 {
+	respond "S.P.Q.R. — No workspace matched this request." 404
+}
+
+# Import per-workspace site configs
+import /etc/caddy/sites/*.caddy

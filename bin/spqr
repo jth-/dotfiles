@@ -1,0 +1,93 @@
+#!/usr/bin/env zsh
+# spqr — S.P.Q.R. utility commands
+#
+# Usage:
+#   spqr template create <name> <dump.sql>     Create template from SQL dump
+#   spqr template create <name> --from <url>   Create template from live database
+#   spqr template list                         List available templates
+#   spqr template drop <name>                  Remove a template
+#   spqr infra up                              Start infrastructure (Postgres + Caddy)
+#   spqr infra down                            Stop infrastructure
+
+set -euo pipefail
+
+SPQR_LIB="${${0:A}:h}/../lib"
+source "$SPQR_LIB/spqr.sh"
+
+local subcmd="${1:-help}"
+shift 2>/dev/null || true
+
+case "$subcmd" in
+  template|tpl)
+    spqr_db_template "$@"
+    ;;
+
+  cleanup|gc)
+    edictum "Scanning for orphaned containers..."
+    spqr_cleanup_orphans "$@"
+    triumphus "Cleanup complete"
+    ;;
+
+  infra)
+    local action="${1:-up}"
+    case "$action" in
+      up)
+        spqr_ensure_infra
+        triumphus "Infrastructure running"
+        ;;
+      down)
+        edictum "Stopping S.P.Q.R. infrastructure..."
+        docker compose -f "$SPQR_DOCKER_DIR/docker-compose.infra.yml" down 2>&1 | while read -r line; do
+          nota "$line"
+        done
+        triumphus "Infrastructure stopped"
+        ;;
+      *)
+        perfidia "Unknown infra action: $action (use up or down)"
+        exit 1
+        ;;
+    esac
+    ;;
+
+  web)
+    local port="${1:-7777}"
+    local web_dir="${${0:A}:h}/../web"
+    edictum "Starting SPQR Agent Manager on port $port..."
+    if ! python3 -c "import flask" &>/dev/null 2>&1; then
+      nota "Installing dependencies..."
+      pip install -q -r "$web_dir/requirements.txt"
+    fi
+    triumphus "Open http://127.0.0.1:$port in your browser"
+    exec python3 "$web_dir/server.py" --port "$port"
+    ;;
+
+  help|--help|-h)
+    spqr_banner "S.P.Q.R. Utilities"
+    echo "Usage:"
+    echo ""
+    echo "  Web Dashboard:"
+    echo "    spqr web [port]                            Start the Agent Manager (default: 7777)"
+    echo ""
+    echo "  Templates:"
+    echo "    spqr template create <name> <dump.sql>     Create template from SQL dump"
+    echo "    spqr template create <name> --from <url>   Create template from live database"
+    echo "    spqr template use [<name>]                 Set template for current project"
+    echo "    spqr template unuse                        Unset template for current project"
+    echo "    spqr template status                       Show current project's template"
+    echo "    spqr template list                         List available templates"
+    echo "    spqr template drop <name>                  Remove a template"
+    echo ""
+    echo "  Infrastructure:"
+    echo "    spqr infra up                              Start Postgres + Caddy"
+    echo "    spqr infra down                            Stop Postgres + Caddy"
+    echo ""
+    echo "  Maintenance:"
+    echo "    spqr cleanup                               Stop orphaned containers"
+    echo "    spqr cleanup --auto                        Stop orphaned containers (no prompts)"
+    ;;
+
+  *)
+    perfidia "Unknown command: $subcmd (try 'spqr help')"
+    exit 1
+    ;;
+esac

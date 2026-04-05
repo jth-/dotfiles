@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% set active = "templates" %}
+{% block title %}Templates{% endblock %}
+
+{% block content %}
+<div class="section-header">
+  <span class="section-numeral">IV</span>
+  <h1 class="section-title">Templates</h1>
+</div>
+
+<p class="section-desc">Postgres database templates for instant workspace provisioning. New workspaces clone from these for near-instant DB creation.</p>
+
+<div style="display:grid;grid-template-columns:1fr 360px;gap:32px;align-items:start">
+
+  <!-- Table -->
+  <div>
+    <div class="table-wrap">
+      <table class="table">
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Size</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="templates-body">
+          <tr>
+            <td colspan="3" style="text-align:center;padding:32px;color:var(--slate-light);font-style:italic">
+              Loading…
+            </td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Create Form -->
+  <div style="background:white;border-radius:var(--radius-lg);padding:28px;box-shadow:var(--shadow-sm);border:1px solid rgba(0,0,0,0.04)">
+    <div style="font-family:var(--font-display);font-size:13px;font-weight:700;letter-spacing:0.08em;color:var(--slate);margin-bottom:20px">
+      Create Template
+    </div>
+
+    <form id="create-tpl-form">
+      <div class="form-group">
+        <label class="form-label" for="tpl-name">Template Name</label>
+        <input id="tpl-name" type="text" class="form-input"
+               placeholder="e.g. production-snapshot" required>
+      </div>
+      <div class="form-group">
+        <label class="form-label" for="tpl-url">Database URL</label>
+        <input id="tpl-url" type="text" class="form-input"
+               placeholder="postgresql://user:pass@host/db" required>
+        <div class="form-hint">Live database to copy from</div>
+      </div>
+      <button type="submit" class="btn btn-triumph" style="width:100%">
+        Create Template
+      </button>
+    </form>
+  </div>
+
+</div>
+
+<!-- Output terminal -->
+<div class="terminal hidden" id="templates-terminal" style="margin-top:24px">
+  <div class="terminal-bar">
+    <div class="terminal-dot r"></div>
+    <div class="terminal-dot y"></div>
+    <div class="terminal-dot g"></div>
+    <span class="terminal-title">spqr template — Oracle of Databases</span>
+  </div>
+  <div class="terminal-body"></div>
+</div>
+
+<div style="margin-top:28px">
+  <div class="alert alert-omen">
+    <span class="alert-icon">★</span>
+    <div>
+      <div class="alert-title" style="color:var(--gold-muted)">Omen — Template Lifecycle</div>
+      <div class="alert-text">Templates are Postgres databases marked with <code>IS_TEMPLATE=true</code>. Run <code>spqr template use &lt;name&gt;</code> inside a project to make new workspaces clone from it automatically.</div>
+    </div>
+  </div>
+</div>
+{% endblock %}
