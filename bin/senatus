@@ -1,8 +1,11 @@
 #!/usr/bin/env zsh
 # senatus — The Senate Convenes
-# Orchestrates a full cmux workspace: consul in one pane, shell in another.
+# Orchestrates a full cmux workspace with three panes:
+#   1. Claude agent (inside Docker container)
+#   2. Container shell (for dev server, tests, etc.)
+#   3. Host shell (for git operations)
 #
-# Usage: senatus [ISSUE-ID] [--no-claude]
+# Usage: senatus [ISSUE-ID | --name NAME] [--no-claude]
 
 set -euo pipefail
 
@@ -10,10 +13,11 @@ SPQR_LIB="${${0:A}:h}/../lib"
 source "$SPQR_LIB/spqr.sh"
 
 # ── Parse Arguments ───────────────────────────────────────────────
-local issue_id="" no_claude=false passthrough_args=()
+local issue_id="" adhoc_name="" no_claude=false passthrough_args=()
 
 for arg in "$@"; do
   case "$arg" in
+    --name=*)    adhoc_name="${arg#--name=}" ;;
     --no-claude) no_claude=true; passthrough_args+=("$arg") ;;
     --no-link-deps) passthrough_args+=("$arg") ;;
     -*)          perfidia "Unknown flag: $arg"; exit 1 ;;
@@ -32,9 +36,66 @@ if ! command -v cmux &>/dev/null; then
   exit 1
 fi
 
+# ── Interactive Selection (no arguments) ──────────────────────────
+if [[ -z "$issue_id" && -z "$adhoc_name" ]] && spqr_require_fzf; then
+  spqr_banner "SENATVS — Select a Decree"
+
+  local fzf_input=""
+  local has_linear=false
+
+  # Export LINEAR_API_KEY so fzf subshells (reload, preview) can access it
+  [[ -n "${LINEAR_API_KEY:-}" ]] && export LINEAR_API_KEY
+
+  if [[ -n "${LINEAR_API_KEY:-}" ]]; then
+    nota "Fetching your assigned issues..."
+    fzf_input="$(spqr_linear_my_issues 2>/dev/null)" && has_linear=true || true
+  fi
+
+  # Prepend the ad-hoc sentinel
+  fzf_input="[AD-HOC]$(printf '\t')━$(printf '\t')Create new ad-hoc workspace
+${fzf_input}"
+
+  local fzf_args=(
+    --header=$'SENATVS \u2014 Select a decree  \u2502  Ctrl-S: search all  \u2502  Ctrl-A: my issues  \u2502  Esc: cancel'
+    --prompt="My Issues \u25b8 "
+    --delimiter=$'\t'
+    --with-nth=1,2,3
+    --no-multi
+    --ansi
+    --preview-window=right:50%:wrap
+    --preview="zsh $SPQR_LIB/spqr.sh --fn spqr_linear_issue_preview {1}"
+    --bind="ctrl-s:reload(zsh $SPQR_LIB/spqr.sh --fn spqr_linear_search {q})+change-prompt(Search \u25b8 )"
+    --bind="ctrl-a:reload(zsh $SPQR_LIB/spqr.sh --fn spqr_linear_my_issues)+change-prompt(My Issues \u25b8 )"
+    ${(z)$(spqr_fzf_theme)}
+  )
+
+  local selection
+  selection="$(printf "%s" "$fzf_input" | fzf "${fzf_args[@]}")" || {
+    nota "Selection cancelled"
+    exit 0
+  }
+
+  local selected_id="${selection%%$'\t'*}"
+
+  if [[ "$selected_id" == "[AD-HOC]" ]]; then
+    printf "${SPQR_GOLD}${SPQR_BOLD}  Name your session: ${SPQR_RESET}"
+    read -r adhoc_name
+    if [[ -z "$adhoc_name" ]]; then
+      nota "No name given — using timestamp"
+    fi
+  else
+    issue_id="$selected_id"
+  fi
+fi
+
 # ── Ad Hoc Session (no issue ID) ────────────────────────────────
 if [[ -z "$issue_id" ]]; then
-  local branch_name="spqr/$(date +%Y%m%d-%H%M%S)"
+  local branch_name
+  if [[ -n "$adhoc_name" ]]; then
+    branch_name="$(spqr_slugify "$adhoc_name")"
+  else
+    branch_name="adhoc/$(date +%Y%m%d-%H%M%S)"
+  fi
   local ws_title="SPQR:${branch_name}"
 
   spqr_banner "SENATVS — Ad Hoc Session"
@@ -42,28 +103,56 @@ if [[ -z "$issue_id" ]]; then
   local repo
   repo="$(spqr_detect_repo)" || exit 1
 
+  # Check for existing workspace
+  local existing_ws
+  existing_ws="$(spqr_find_workspace "$ws_title")"
+  if [[ -n "$existing_ws" ]]; then
+    caveat "Existing session found: $ws_title"
+    cmux select-workspace --workspace "$existing_ws"
+    triumphus "Resumed session $ws_title"
+    exit 0
+  fi
+
   local worktree
   worktree="$(spqr_create_worktree "$repo" "$branch_name")" || exit 1
   spqr_link_deps "$repo" "$worktree"
+
+  # Start container
+  spqr_ensure_infra
+  spqr_ensure_image
+  local image
+  image="$(spqr_ensure_project_image "$repo" "$(basename "$repo")")"
+  local container_name
+  container_name="$(spqr_start_container "$branch_name" "$worktree" "$image")" || exit 1
+  spqr_register_site "$branch_name"
 
   edictum "Creating workspace..."
   local ws_id
   ws_id="$(spqr_create_workspace "$repo" "$ws_title")" || exit 1
 
-  # Main pane: launch Claude in the worktree
-  local claude_cmd="cd $worktree && exec claude"
+  # Main pane: Claude in container
+  local claude_cmd="docker exec -it '$container_name' claude --dangerously-skip-permissions"
   spqr_send "$ws_id" "" "$claude_cmd"
 
-  # Aux pane: shell in the worktree
-  local surface_ref
-  surface_ref="$(spqr_add_split "$ws_id" right)" || true
-  if [[ -n "$surface_ref" ]]; then
-    spqr_send "$ws_id" "$surface_ref" "cd $worktree && exec \$SHELL -l"
+  # Container shell pane (for dev server, tests)
+  local surface_ref_container
+  surface_ref_container="$(spqr_add_split "$ws_id" right)" || true
+  if [[ -n "$surface_ref_container" ]]; then
+    spqr_send "$ws_id" "$surface_ref_container" "docker exec -it '$container_name' /bin/bash"
+  fi
+
+  # Host shell pane (for git)
+  local surface_ref_host
+  surface_ref_host="$(spqr_add_split "$ws_id" down)" || true
+  if [[ -n "$surface_ref_host" ]]; then
+    spqr_send "$ws_id" "$surface_ref_host" "cd '$worktree' && exec \$SHELL -l"
   fi
 
   cmux select-workspace --workspace "$ws_id"
-  cmux set-status spqr "Ad hoc session" --icon sparkle --color "#FFD700" --workspace "$ws_id" 2>/dev/null || true
+  cmux set-status spqr "Ad hoc: $branch_name" --icon sparkle --color "#FFD700" --workspace "$ws_id" 2>/dev/null || true
   triumphus "Ad hoc session ready: $branch_name"
+  nota "Container: $container_name"
+  nota "Preview: http://${branch_name//[^a-zA-Z0-9_-]/-}.localhost:4000"
   exit 0
 fi
 
@@ -120,34 +209,64 @@ edictum "Ritus II: Dispatching the Consul"
 
 # Resolve the real path of consul (it may be a symlink in ~/bin/)
 local consul_path="${${0:A}:h}/consul"
-local consul_cmd="$consul_path $issue_id ${passthrough_args[*]}"
+local consul_cmd="'$consul_path' '$issue_id' ${passthrough_args[*]}"
 
 nota "Running: consul $issue_id ${passthrough_args[*]}"
 spqr_send "$ws_id" "" "$consul_cmd"
 
 # ── Ritus III: The Auxiliary Camp ─────────────────────────────────
 edictum "Ritus III: The Auxiliary Camp"
-nota "Creating auxiliary shell pane..."
+nota "Creating auxiliary panes..."
 
-local surface_ref
-surface_ref="$(spqr_add_split "$ws_id" right)" || {
-  caveat "Could not create split — continuing with single pane"
+local container_name
+container_name="$(spqr_container_name "$branch_name")"
+
+# Container shell pane (for dev server, tests — waits for container)
+local surface_ref_container
+surface_ref_container="$(spqr_add_split "$ws_id" right)" || {
+  caveat "Could not create container shell split — continuing with fewer panes"
 }
 
-if [[ -n "$surface_ref" ]]; then
-  local worktree_dir="$repo/.worktrees/$branch_name"
-  # Write a small helper that waits for the plan, then cd's into the worktree
-  local wait_script="$repo/.worktrees/.senatus-wait-${branch_safe}.sh"
-  mkdir -p "$repo/.worktrees"
+if [[ -n "$surface_ref_container" ]]; then
+  local worktree_dir
+  worktree_dir="$(spqr_worktree_dir "$repo" "$branch_name")"
+  local wt_root
+  wt_root="$(spqr_worktree_root "$repo")"
+  # Write a helper that waits for the plan, then opens a container shell
+  local wait_script="${wt_root}/.senatus-wait-${branch_safe}.sh"
+  mkdir -p "$wt_root"
   cat > "$wait_script" <<WAITEOF
 #!/usr/bin/env zsh
 echo 'Awaiting Acta Senatus...'
 cmux wait-for ACTA_READY_${branch_safe} --timeout 300 2>/dev/null
-cd "$worktree_dir" 2>/dev/null && echo "Ready in worktree: $branch_name"
-exec \$SHELL -l
+echo 'Container shell ready — use this for dev server, tests, etc.'
+exec docker exec -it "${container_name}" /bin/bash
 WAITEOF
   chmod +x "$wait_script"
-  spqr_send "$ws_id" "$surface_ref" "source $wait_script"
+  spqr_send "$ws_id" "$surface_ref_container" "source '$wait_script'"
+fi
+
+# Host shell pane (for git operations)
+local surface_ref_host
+surface_ref_host="$(spqr_add_split "$ws_id" down)" || {
+  caveat "Could not create host shell split"
+}
+
+if [[ -n "$surface_ref_host" ]]; then
+  local worktree_dir
+  worktree_dir="$(spqr_worktree_dir "$repo" "$branch_name")"
+  local wt_root
+  wt_root="$(spqr_worktree_root "$repo")"
+  local host_wait_script="${wt_root}/.senatus-host-${branch_safe}.sh"
+  cat > "$host_wait_script" <<WAITEOF
+#!/usr/bin/env zsh
+echo 'Awaiting Acta Senatus...'
+cmux wait-for ACTA_READY_${branch_safe} --timeout 300 2>/dev/null
+cd "${worktree_dir}" 2>/dev/null && echo "Git shell ready in worktree: ${branch_name}"
+exec \$SHELL -l
+WAITEOF
+  chmod +x "$host_wait_script"
+  spqr_send "$ws_id" "$surface_ref_host" "source '$host_wait_script'"
 fi
 
 # ── Switch to workspace ──────────────────────────────────────────
@@ -157,3 +276,4 @@ cmux select-workspace --workspace "$ws_id"
 cmux set-status spqr "Senatus in session" --icon sparkle --color "#FFD700" --workspace "$ws_id" 2>/dev/null || true
 
 triumphus "The Senate is convened for $issue_id"
+nota "Preview: http://${branch_name//[^a-zA-Z0-9_-]/-}.localhost:4000"

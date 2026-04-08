@@ -1,7 +1,7 @@
 #!/usr/bin/env zsh
 # consul — The Campaign Planner
-# Fetches a Linear issue, creates a worktree, generates an implementation plan,
-# and launches an interactive Claude session.
+# Fetches a Linear issue, creates a worktree, starts an agent container,
+# generates an implementation plan, and launches an interactive Claude session.
 #
 # Usage: consul <ISSUE-ID> [--no-claude] [--no-link-deps]
 
@@ -46,56 +46,53 @@ nota "Fetching decree $issue_id from Linear..."
 local linear_json="" issue_title="" issue_desc="" branch_name="" parent_context="" project_context=""
 
 linear_json="$(spqr_query_linear "$issue_id" 2>/dev/null)" && {
-  issue_title="$(python3 -c "
+  # Parse all fields in a single Python invocation using NUL-delimited output
+  local parsed
+  parsed="$(python3 -c "
 import json, sys
 data = json.loads(sys.stdin.read())
 issue = data.get('data', {}).get('issue', {})
-print(issue.get('title', ''))
-" <<< "$linear_json")"
 
-  issue_desc="$(python3 -c "
-import json, sys
-data = json.loads(sys.stdin.read())
-issue = data.get('data', {}).get('issue', {})
-print(issue.get('description', '') or '')
-" <<< "$linear_json")"
+title = issue.get('title', '')
+desc = issue.get('description', '') or ''
+branch = issue.get('branchName', '') or ''
 
-  branch_name="$(python3 -c "
-import json, sys
-data = json.loads(sys.stdin.read())
-issue = data.get('data', {}).get('issue', {})
-print(issue.get('branchName', '') or '')
-" <<< "$linear_json")"
-
-  parent_context="$(python3 -c "
-import json, sys
-data = json.loads(sys.stdin.read())
-issue = data.get('data', {}).get('issue', {})
+parent_lines = ''
 parent = issue.get('parent') or {}
 if parent:
-    print(f\"{parent.get('identifier', '')}: {parent.get('title', '')}\")
-    desc = parent.get('description', '') or ''
-    if desc:
-        print(desc[:500])
-" <<< "$linear_json")"
+    parent_lines = f\"{parent.get('identifier', '')}: {parent.get('title', '')}\"
+    pdesc = parent.get('description', '') or ''
+    if pdesc:
+        parent_lines += '\n' + pdesc[:500]
 
-  project_context="$(python3 -c "
-import json, sys
-data = json.loads(sys.stdin.read())
-issue = data.get('data', {}).get('issue', {})
+project_lines = ''
 proj = issue.get('project') or {}
 if proj:
-    print(f\"Project: {proj.get('name', '')}\")
-    desc = proj.get('description', '') or ''
-    if desc:
-        print(desc[:500])
+    project_lines = f\"Project: {proj.get('name', '')}\"
+    pdesc = proj.get('description', '') or ''
+    if pdesc:
+        project_lines += '\n' + pdesc[:500]
+
+# NUL-delimited fields for safe shell parsing
+sys.stdout.write(title + '\0')
+sys.stdout.write(desc + '\0')
+sys.stdout.write(branch + '\0')
+sys.stdout.write(parent_lines + '\0')
+sys.stdout.write(project_lines + '\0')
 " <<< "$linear_json")"
+
+  # Split NUL-delimited fields
+  issue_title="${parsed%%$'\0'*}";    parsed="${parsed#*$'\0'}"
+  issue_desc="${parsed%%$'\0'*}";     parsed="${parsed#*$'\0'}"
+  branch_name="${parsed%%$'\0'*}";    parsed="${parsed#*$'\0'}"
+  parent_context="${parsed%%$'\0'*}"; parsed="${parsed#*$'\0'}"
+  project_context="${parsed%%$'\0'*}"
 
   if [[ -n "$issue_title" ]]; then
     triumphus "Found: $issue_id — $issue_title"
   fi
 } || {
-  caveat "Could not fetch from Linear — Claude will look up the issue via MCP"
+  caveat "Could not fetch from Linear — continuing without issue context"
 }
 
 # Derive branch name: prefer Linear's, fall back to lowercase issue ID
@@ -120,6 +117,24 @@ if [[ "$no_link_deps" == false ]]; then
   nota "Dependencies linked"
 fi
 
+# ── Ritus III: Raising the Castrum (Container) ───────────────────
+edictum "Ritus III: Raising the Castrum"
+
+spqr_ensure_infra
+spqr_ensure_image
+
+# Check for project-specific Dockerfile
+local image
+image="$(spqr_ensure_project_image "$repo" "$(basename "$repo")")"
+nota "Image: $image"
+
+local container_name
+container_name="$(spqr_start_container "$branch_name" "$worktree" "$image")" || exit 1
+nota "Container: $container_name"
+
+# Register preview site
+spqr_register_site "$branch_name"
+
 # ── Build Issue Context ───────────────────────────────────────────
 local issue_context="Linear Issue: $issue_id"
 [[ -n "$issue_title" ]] && issue_context+="\nTitle: $issue_title"
@@ -127,8 +142,8 @@ local issue_context="Linear Issue: $issue_id"
 [[ -n "$parent_context" ]] && issue_context+="\n\nParent Issue:\n$parent_context"
 [[ -n "$project_context" ]] && issue_context+="\n\n$project_context"
 
-# ── Ritus III: Drafting the Acta Senatus ──────────────────────────
-edictum "Ritus III: Drafting the Acta Senatus"
+# ── Ritus IV: Drafting the Acta Senatus ──────────────────────────
+edictum "Ritus IV: Drafting the Acta Senatus"
 nota "Dispatching reconnaissance Claude to draft the implementation plan..."
 
 local plan_prompt="You are a senior engineer exploring a codebase to plan an implementation.
@@ -159,16 +174,14 @@ How to verify the implementation is complete and correct (tests to write, manual
 Be specific and reference actual files/functions you found. This plan will guide an interactive coding session."
 
 if [[ -z "$issue_title" && -z "$issue_desc" ]]; then
-  # No Linear data — tell Claude to look it up
   plan_prompt="You are a senior engineer exploring a codebase to plan an implementation.
 
 The issue ID is: $issue_id
-Look up this issue using Linear MCP tools if available, otherwise ask the user for context.
+No issue context was available from Linear. Work with whatever context you can find in the codebase.
 
 Your task:
-1. Look up the issue details
-2. Explore the codebase thoroughly — read relevant files, understand the architecture
-3. Write an implementation plan to a file called ACTA_SENATUS.md in the working directory
+1. Explore the codebase thoroughly — read relevant files, understand the architecture
+2. Write an implementation plan to a file called ACTA_SENATUS.md in the working directory
 
 The plan MUST have these sections:
 ## Objective
@@ -189,9 +202,11 @@ How to verify the implementation is complete and correct (tests to write, manual
 Be specific and reference actual files/functions you found. This plan will guide an interactive coding session."
 fi
 
-(cd "$worktree" && claude -p --permission-mode plan "$plan_prompt" > /dev/null 2>&1)
+# Run the planning Claude inside the container
+docker exec "$container_name" \
+  claude -p --permission-mode plan "$plan_prompt" > /dev/null 2>&1
 
-# Signal that the plan is ready
+# Signal that the plan is ready (for senatus aux pane synchronization)
 local branch_safe="${branch_name//[^a-zA-Z0-9_-]/_}"
 if command -v cmux &>/dev/null; then
   cmux wait-for -S "ACTA_READY_${branch_safe}" 2>/dev/null || true
@@ -199,15 +214,15 @@ fi
 
 triumphus "Acta Senatus drafted at $worktree/ACTA_SENATUS.md"
 
-# ── Ritus IV: The Consul Takes the Field ──────────────────────────
+# ── Ritus V: The Consul Takes the Field ──────────────────────────
 if [[ "$no_claude" == true ]]; then
-  triumphus "Campaign planned. Worktree ready at: $worktree"
+  triumphus "Campaign planned. Container: $container_name | Worktree: $worktree"
   echo "$worktree"
   exit 0
 fi
 
-edictum "Ritus IV: The Consul Takes the Field"
-nota "Launching interactive Claude session..."
+edictum "Ritus V: The Consul Takes the Field"
+nota "Launching interactive Claude session in container..."
 
 local system_prompt="You are working on Linear issue $issue_id"
 [[ -n "$issue_title" ]] && system_prompt+=": $issue_title"
@@ -218,5 +233,5 @@ Follow the Battle Plan steps to implement the changes.
 Ask the user if anything in the plan needs adjustment before starting."
 [[ -n "$issue_context" ]] && system_prompt+="\n\nIssue Context:\n$issue_context"
 
-cd "$worktree"
-exec claude --append-system-prompt "$system_prompt"
+exec docker exec -it "$container_name" \
+  claude --dangerously-skip-permissions --append-system-prompt "$system_prompt"

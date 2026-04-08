@@ -1,6 +1,7 @@
 #!/usr/bin/env zsh
 # proscribe — Damnatio Memoriae
-# Tears down cmux workspace(s) and removes the worktree.
+# Tears down cmux workspace(s), stops Docker containers, drops databases,
+# removes Caddy site configs, and removes worktrees.
 #
 # Usage: proscribe [ISSUE-ID|branch] [--force] [--delete-branch]
 
@@ -83,6 +84,37 @@ else
   fi
 fi
 
+# ── Interactive Selection (no target resolved) ────────────────────
+if [[ -z "$branch" ]] && spqr_require_fzf; then
+  local workspace_list
+  workspace_list="$(spqr_list_workspaces 2>/dev/null)"
+
+  if [[ -z "$workspace_list" ]]; then
+    perfidia "No active SPQR workspaces or containers found"
+    exit 1
+  fi
+
+  local fzf_args=(
+    --header=$'PROSCRIBE \u2014 Select a target for Damnatio Memoriae  \u2502  Esc: cancel'
+    --prompt="Filter \u25b8 "
+    --delimiter=$'\t'
+    --with-nth=1,2,3
+    --no-multi
+    --ansi
+    --preview-window=right:50%:wrap
+    --preview="echo 'Branch: {1}'; echo 'Type: {2}'; echo 'Status: {3}'; echo; cname=spqr-\$(echo {1} | tr -c 'a-zA-Z0-9_-' '-'); docker ps -a --filter name=\$cname --format 'Container: {{.Names}}\nImage: {{.Image}}\nCreated: {{.CreatedAt}}\nStatus: {{.Status}}' 2>/dev/null; echo"
+    ${(z)$(spqr_fzf_theme)}
+  )
+
+  local selection
+  selection="$(printf "%s" "$workspace_list" | fzf "${fzf_args[@]}")" || {
+    nota "Selection cancelled"
+    exit 0
+  }
+
+  branch="${selection%%$'\t'*}"
+fi
+
 if [[ -z "$branch" ]]; then
   perfidia "Could not determine target. Usage: proscribe [ISSUE-ID|branch] [--force] [--delete-branch]"
   exit 1
@@ -121,11 +153,32 @@ if command -v cmux &>/dev/null; then
   fi
 fi
 
-# ── Ritus II: Razing the Castra ──────────────────────────────────
-edictum "Ritus II: Razing the Castra"
+# ── Ritus II: Dismantling the Castrum (Containers) ───────────────
+edictum "Ritus II: Dismantling the Castrum"
 
-local worktree_dir="$repo/.worktrees/$branch"
-local review_worktree_dir="$repo/.worktrees/review-$branch"
+# Stop containers for both the main workspace and review workspace
+for container_branch in "$branch" "review-$branch"; do
+  local container_name
+  container_name="$(spqr_container_name "$container_branch")"
+  if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${container_name}$"; then
+    spqr_stop_container "$container_branch"
+  fi
+done
+
+# ── Ritus III: Clearing the Routes (Caddy) ───────────────────────
+edictum "Ritus III: Clearing the Routes"
+
+for site_branch in "$branch" "review-$branch"; do
+  spqr_unregister_site "$site_branch"
+done
+
+# ── Ritus IV: Razing the Castra (Worktrees) ──────────────────────
+edictum "Ritus IV: Razing the Castra"
+
+local worktree_dir
+worktree_dir="$(spqr_worktree_dir "$repo" "$branch")"
+local review_worktree_dir
+review_worktree_dir="$(spqr_worktree_dir "$repo" "review-$branch")"
 
 for wt in "$worktree_dir" "$review_worktree_dir"; do
   if [[ -d "$wt" ]]; then
@@ -149,8 +202,8 @@ done
 
 git -C "$repo" worktree prune 2>/dev/null
 
-# ── Ritus III: Damnatio Memoriae ──────────────────────────────────
-edictum "Ritus III: Damnatio Memoriae"
+# ── Ritus V: Damnatio Memoriae ───────────────────────────────────
+edictum "Ritus V: Damnatio Memoriae"
 
 if git -C "$repo" show-ref --verify --quiet "refs/heads/$branch" 2>/dev/null; then
   if [[ "$delete_branch" == true ]]; then
